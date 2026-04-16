@@ -114,8 +114,7 @@ fn build_search_query(track: &TrackInfo) -> String {
 }
 
 fn sanitize_query(s: &str) -> String {
-    s.replace('"', "")
-        .replace('\'', "")
+    s.replace(['"', '\''], "")
         .replace('&', "and")
         .trim()
         .to_string()
@@ -276,7 +275,7 @@ async fn match_single_track(
         })
         .collect();
 
-    candidates.sort_by(|a, b| b.score.cmp(&a.score));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.score));
     candidates.truncate(5);
 
     let status = if candidates.first().map(|c| c.score).unwrap_or(0) >= confidence {

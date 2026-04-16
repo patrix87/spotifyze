@@ -108,6 +108,7 @@ async fn add_tracks_to_playlist(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn batch_uris(uris: &[String], batch_size: usize) -> Vec<Vec<String>> {
     uris.chunks(batch_size)
         .map(|chunk| chunk.to_vec())
