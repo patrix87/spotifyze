@@ -1,0 +1,33 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+
+# Rust
+src-tauri/target/
+
+# Environment
+.env
+.env.*
+
+# Spotify token cache
+.spotify_token
+
+# Editor
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
