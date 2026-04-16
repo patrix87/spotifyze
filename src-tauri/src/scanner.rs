@@ -64,12 +64,14 @@ fn extract_metadata(path: &Path) -> Result<TrackInfo, String> {
         .filter(|s| !s.is_empty());
 
     let album_artist = tag
-        .get_string(&lofty::tag::ItemKey::AlbumArtist)
+        .get_string(lofty::tag::ItemKey::AlbumArtist)
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 
     let track_number = tag.track();
-    let year = tag.year();
+    let year = tag
+        .get_string(lofty::tag::ItemKey::Year)
+        .and_then(|s| s.parse::<u32>().ok());
 
     let file_name = path
         .file_name()

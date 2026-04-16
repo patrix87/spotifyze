@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use directories::ProjectDirs;
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -102,8 +102,8 @@ fn save_config(config: &AppConfig) -> Result<(), String> {
 }
 
 fn generate_pkce_verifier() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..64).map(|_| rng.r#gen::<u8>()).collect();
+    let mut rng = rand::rng();
+    let bytes: Vec<u8> = (0..64).map(|_| rng.random::<u8>()).collect();
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
