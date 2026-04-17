@@ -4,9 +4,55 @@ on:
   push:
     tags:
       - "v*"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 jobs:
+  prepare:
+    # Skip if triggered by a failed CI run
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      should_release: ${{ steps.resolve.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            TAG="v${VERSION}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+              echo "Tag $TAG already exists, skipping release."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            else
+              git tag "$TAG"
+              git push origin "$TAG"
+              echo "Created tag $TAG"
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   build:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     permissions:
       contents: write
     strategy:
@@ -59,8 +105,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Folder to Spotify Playlist ${{ github.ref_name }}"
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Spotifyze ${{ needs.prepare.outputs.tag }}"
           releaseBody: "Download the installer for your platform below."
           releaseDraft: true
           prerelease: false
