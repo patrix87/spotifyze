@@ -1,12 +1,19 @@
-# Folder to Spotify Playlist
+# Spotifyze
 
-A desktop app that creates Spotify playlists from your local music folders. It reads metadata from audio files, fuzzy-matches them against Spotify's catalog (preferring original album releases over compilations and remixes), and creates a playlist with the matched tracks.
+Turn your local music into Spotify playlists.
+
+A desktop app that imports your local music library into Spotify. It reads metadata from audio files and playlist files, fuzzy-matches them against Spotify's catalog (preferring original album releases over compilations and remixes), and creates playlists with the matched tracks.
 
 ## Features
 
-- **Multi-folder support** — scan multiple folders at once, each becomes its own playlist
+- **Drag and drop** — drop folders or `.m3u` playlist files directly into the app
+- **Multi-source support** — scan folders and M3U playlists, each becomes its own Spotify playlist
 - **Smart matching** — fuzzy scoring prefers original album releases over remixes, compilations, and live versions
-- **Review before creating** — see all matches, pick alternatives for ambiguous tracks, skip what you don't want
+- **Review before creating** — see all matches, pick alternatives, preview audio, skip what you don't want
+- **Filter & sort** — filter by match status, sort by name or confidence score
+- **Audio preview** — listen to Spotify previews or local files before confirming
+- **Editable playlist names** — rename playlists before creating them
+- **Match caching** — results are saved so re-scanning is instant
 - **Cross-platform** — runs on Windows, macOS, and Linux
 - **No server needed** — connects directly to Spotify via OAuth (PKCE)
 
@@ -27,7 +34,7 @@ Before first use, you need a Spotify Client ID (free):
 
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
 2. Log in and create a new app (any name, any description)
-3. In the app settings, add `http://localhost:8888/callback` as a **Redirect URI**
+3. In the app settings, add `http://127.0.0.1:8888/callback` as a **Redirect URI**
 4. Copy the **Client ID** from the app dashboard
 5. Open the app and paste the Client ID when prompted
 
@@ -36,7 +43,7 @@ Before first use, you need a Spotify Client ID (free):
 ## How It Works
 
 1. **Connect** — enter your Client ID and log in to Spotify
-2. **Select Folders** — pick one or more folders containing music files (MP3, FLAC, M4A, OGG, WAV)
+2. **Add Music** — drop or browse for folders and `.m3u` playlist files containing your music
 3. **Review Matches** — the app searches Spotify for each track and shows the best matches. Tracks are scored by:
    - Artist similarity (40%)
    - Title similarity (30%)
@@ -47,7 +54,9 @@ Before first use, you need a Spotify Client ID (free):
 
 ## Supported Formats
 
-MP3, FLAC, M4A (AAC/ALAC), OGG Vorbis, WAV — metadata is read using the [lofty](https://github.com/Serial-ATA/lofty-rs) crate.
+**Audio files:** MP3, FLAC, M4A (AAC/ALAC), OGG Vorbis, WAV — metadata is read using the [lofty](https://github.com/Serial-ATA/lofty-rs) crate.
+
+**Playlist files:** M3U / M3U8 — entries are resolved from `#EXTINF` metadata or by reading the referenced audio files.
 
 ## Build from Source
 
@@ -73,4 +82,4 @@ npm run tauri build
 
 ## License
 
-MIT
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You are free to use, modify, and redistribute this software for **non-commercial purposes only**, with attribution. Commercial use requires a separate agreement — contact the author for licensing.

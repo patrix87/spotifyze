@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
-  "productName": "Folder to Spotify Playlist",
+  "productName": "Spotifyze",
   "version": "0.1.0",
-  "identifier": "com.folder-to-spotify.app",
+  "identifier": "com.spotifyze.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,12 +13,13 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "Folder to Spotify Playlist",
+        "title": "Spotifyze",
         "width": 960,
         "height": 700,
         "resizable": true,
         "minWidth": 800,
-        "minHeight": 600
+        "minHeight": 600,
+        "backgroundColor": "#09090b"
       }
     ],
     "security": {
@@ -37,7 +38,6 @@
     ]
   },
   "plugins": {
-    "dialog": {},
     "shell": {
       "open": true
     }

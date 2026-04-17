@@ -6,6 +6,14 @@ import { useAppStore } from "../lib/store";
 
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/plugin-dialog");
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: vi.fn(() => ({
+    onDragDropEvent: vi.fn(() => Promise.resolve(() => {})),
+  })),
+}));
 
 describe("FolderStep", () => {
   beforeEach(() => {
@@ -20,13 +28,19 @@ describe("FolderStep", () => {
 
   it("shows empty state when no folders selected", () => {
     render(<FolderStep />);
-    expect(screen.getByText("No folders selected")).toBeInTheDocument();
-    expect(screen.getByText("Add a folder to get started")).toBeInTheDocument();
+    expect(screen.getByText("Drop folders or playlists here, or")).toBeInTheDocument();
+    expect(screen.getByText("Add a folder")).toBeInTheDocument();
+    expect(screen.getByText("Add a playlist")).toBeInTheDocument();
   });
 
   it("renders the add folder button", () => {
     render(<FolderStep />);
     expect(screen.getByText("+ Add Folder")).toBeInTheDocument();
+  });
+
+  it("renders the add playlist button", () => {
+    render(<FolderStep />);
+    expect(screen.getByText("+ Add Playlist")).toBeInTheDocument();
   });
 
   it("opens folder picker on add folder click", async () => {
@@ -61,14 +75,14 @@ describe("FolderStep", () => {
     render(<FolderStep />);
 
     expect(screen.getByDisplayValue("Rock")).toBeInTheDocument();
-    await user.click(screen.getByTitle("Remove folder"));
+    await user.click(screen.getByTitle("Remove"));
     expect(screen.queryByDisplayValue("Rock")).not.toBeInTheDocument();
   });
 
   it("has a recursive checkbox", () => {
     render(<FolderStep />);
     expect(
-      screen.getByLabelText("Scan subfolders recursively")
+      screen.getByLabelText("Include subfolders")
     ).toBeInTheDocument();
   });
 
@@ -93,6 +107,22 @@ describe("FolderStep", () => {
     render(<FolderStep />);
     await user.click(screen.getByText("← Back"));
     expect(useAppStore.getState().step).toBe("connect");
+  });
+
+  it("opens playlist file picker on add playlist click", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const mockOpen = vi.mocked(open);
+    mockOpen.mockResolvedValue(null);
+
+    const user = userEvent.setup();
+    render(<FolderStep />);
+    await user.click(screen.getByText("+ Add Playlist"));
+
+    expect(mockOpen).toHaveBeenCalledWith({
+      directory: false,
+      multiple: true,
+      filters: [{ name: "Playlists", extensions: ["m3u", "m3u8"] }],
+    });
   });
 
   it("allows editing folder name", async () => {

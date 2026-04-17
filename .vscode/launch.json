@@ -5,10 +5,12 @@
       "name": "Tauri Dev (Debug)",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/src-tauri/target/debug/folder-to-spotify-playlist.exe",
+      "cargo": {
+        "args": ["build", "--manifest-path=${workspaceFolder}/src-tauri/Cargo.toml", "--no-default-features"]
+      },
       "args": [],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "tauri:dev",
+      "preLaunchTask": "vite:dev",
       "env": {
         "RUST_BACKTRACE": "1"
       }

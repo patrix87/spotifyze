@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useAppStore } from "../lib/store";
 import type { MatchResult, PlaylistResult, ScanResult } from "../lib/types";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(() => Promise.resolve()),
+}));
 
 describe("useAppStore", () => {
   beforeEach(() => {
@@ -9,7 +13,6 @@ describe("useAppStore", () => {
       profile: null,
       folders: [],
       recursive: false,
-      isPublic: false,
       confidence: 80,
     });
   });
@@ -50,6 +53,7 @@ describe("useAppStore", () => {
       expect(folders).toHaveLength(1);
       expect(folders[0].path).toBe("/home/user/Music");
       expect(folders[0].name).toBe("Music");
+      expect(folders[0].source).toBe("folder");
     });
 
     it("extracts folder name from path", () => {
@@ -81,6 +85,26 @@ describe("useAppStore", () => {
       useAppStore.getState().addFolder("/music/rock");
       useAppStore.getState().updateFolderName("/music/rock", "Classic Rock");
       expect(useAppStore.getState().folders[0].name).toBe("Classic Rock");
+    });
+
+    it("adds a playlist", () => {
+      useAppStore.getState().addPlaylist("/home/user/Road Trip.m3u");
+      const folders = useAppStore.getState().folders;
+      expect(folders).toHaveLength(1);
+      expect(folders[0].path).toBe("/home/user/Road Trip.m3u");
+      expect(folders[0].name).toBe("Road Trip");
+      expect(folders[0].source).toBe("playlist");
+    });
+
+    it("strips .m3u8 extension from playlist name", () => {
+      useAppStore.getState().addPlaylist("/home/user/Chill Vibes.m3u8");
+      expect(useAppStore.getState().folders[0].name).toBe("Chill Vibes");
+    });
+
+    it("prevents duplicate playlists", () => {
+      useAppStore.getState().addPlaylist("/home/user/mix.m3u");
+      useAppStore.getState().addPlaylist("/home/user/mix.m3u");
+      expect(useAppStore.getState().folders).toHaveLength(1);
     });
 
     it("sets scan result", () => {
@@ -152,11 +176,6 @@ describe("useAppStore", () => {
       expect(useAppStore.getState().recursive).toBe(true);
     });
 
-    it("toggles isPublic", () => {
-      useAppStore.getState().setIsPublic(true);
-      expect(useAppStore.getState().isPublic).toBe(true);
-    });
-
     it("sets confidence", () => {
       useAppStore.getState().setConfidence(90);
       expect(useAppStore.getState().confidence).toBe(90);
@@ -186,7 +205,7 @@ describe("useAppStore", () => {
       useAppStore.getState().updateSelectedUri("/music/rock", "/a.mp3", "uri:2");
       const mr = useAppStore.getState().folders[0].matchResults![0];
       expect(mr.selected_uri).toBe("uri:2");
-      expect(mr.status).toBe("AutoMatched");
+      expect(mr.status).toBe("NeedsReview");
     });
 
     it("clears selected URI when null", () => {
@@ -211,7 +230,7 @@ describe("useAppStore", () => {
       useAppStore.getState().updateSelectedUri("/music/rock", "/a.mp3", null);
       const mr = useAppStore.getState().folders[0].matchResults![0];
       expect(mr.selected_uri).toBeNull();
-      // Status stays as-is (AutoMatched) when uri is null since the status is only set to AutoMatched on non-null uri
+      expect(mr.status).toBe("AutoMatched");
     });
   });
 });

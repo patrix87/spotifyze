@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import type {
   FolderEntry,
   MatchResult,
@@ -19,6 +20,7 @@ interface AppState {
   // Folders
   folders: FolderEntry[];
   addFolder: (path: string) => void;
+  addPlaylist: (path: string) => void;
   removeFolder: (path: string) => void;
   updateFolderName: (path: string, name: string) => void;
   setScanResult: (
@@ -32,8 +34,6 @@ interface AppState {
   // Options
   recursive: boolean;
   setRecursive: (value: boolean) => void;
-  isPublic: boolean;
-  setIsPublic: (value: boolean) => void;
   confidence: number;
   setConfidence: (value: number) => void;
 
@@ -42,6 +42,11 @@ interface AppState {
     folderPath: string,
     trackPath: string,
     uri: string | null
+  ) => void;
+  updateCandidates: (
+    folderPath: string,
+    trackPath: string,
+    candidates: MatchResult["candidates"]
   ) => void;
 }
 
@@ -67,6 +72,27 @@ export const useAppStore = create<AppState>((set) => ({
           {
             path,
             name: folderNameFromPath(path),
+            source: "folder",
+            scanResult: null,
+            matchResults: null,
+            playlistResult: null,
+          },
+        ],
+      };
+    }),
+  addPlaylist: (path) =>
+    set((state) => {
+      if (state.folders.some((f) => f.path === path)) return state;
+      // Strip .m3u/.m3u8 extension for playlist name
+      const rawName = folderNameFromPath(path);
+      const name = rawName.replace(/\.m3u8?$/i, "");
+      return {
+        folders: [
+          ...state.folders,
+          {
+            path,
+            name,
+            source: "playlist",
             scanResult: null,
             matchResults: null,
             playlistResult: null,
@@ -109,8 +135,6 @@ export const useAppStore = create<AppState>((set) => ({
 
   recursive: false,
   setRecursive: (value) => set({ recursive: value }),
-  isPublic: false,
-  setIsPublic: (value) => set({ isPublic: value }),
   confidence: 80,
   setConfidence: (value) => set({ confidence: value }),
 
@@ -125,10 +149,58 @@ export const useAppStore = create<AppState>((set) => ({
             return {
               ...mr,
               selected_uri: uri,
-              status: uri ? ("AutoMatched" as const) : mr.status,
+            };
+          }),
+        };
+      }),
+    })),
+
+  updateCandidates: (folderPath, trackPath, candidates) =>
+    set((state) => ({
+      folders: state.folders.map((f) => {
+        if (f.path !== folderPath || !f.matchResults) return f;
+        return {
+          ...f,
+          matchResults: f.matchResults.map((mr) => {
+            if (mr.track.path !== trackPath) return mr;
+            return {
+              ...mr,
+              candidates,
+              selected_uri: null,
+              status: candidates.length > 0 ? ("NeedsReview" as const) : ("NotFound" as const),
             };
           }),
         };
       }),
     })),
 }));
+
+// Persist match results to cache on changes (debounced)
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function persistMatchCache(folders: FolderEntry[]) {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    for (const f of folders) {
+      if (f.matchResults) {
+        try {
+          const result = invoke("save_match_results", {
+            folderPath: f.path,
+            results: f.matchResults,
+          });
+          if (result && typeof result.catch === "function") {
+            result.catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, 500);
+}
+
+useAppStore.subscribe((state, prev) => {
+  if (state.folders !== prev.folders) {
+    persistMatchCache(state.folders);
+  }
+});

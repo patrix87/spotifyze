@@ -6,6 +6,9 @@ import { useAppStore } from "../lib/store";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core");
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -107,7 +110,7 @@ describe("ConnectStep", () => {
     await waitFor(() => {
       expect(screen.getByText("Test User")).toBeInTheDocument();
     });
-    expect(screen.getByText("Next — Select Folders")).toBeInTheDocument();
+    expect(screen.getByText("Next — Add Music")).toBeInTheDocument();
   });
 
   it("shows error on login failure", async () => {

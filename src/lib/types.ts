@@ -29,6 +29,7 @@ export interface MatchCandidate {
   popularity: number;
   score: number;
   external_url: string | null;
+  preview_url: string | null;
 }
 
 export type MatchStatus = "AutoMatched" | "NeedsReview" | "NotFound";
@@ -55,6 +56,7 @@ export interface UserProfile {
 export interface FolderEntry {
   path: string;
   name: string;
+  source: "folder" | "playlist";
   scanResult: ScanResult | null;
   matchResults: MatchResult[] | null;
   playlistResult: PlaylistResult | null;

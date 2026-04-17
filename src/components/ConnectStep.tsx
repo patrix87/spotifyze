@@ -70,9 +70,9 @@ export function ConnectStep() {
   return (
     <div className="flex flex-col items-center gap-8 pt-12">
       <div className="text-center">
-        <h1 className="text-3xl font-bold mb-2">Folder to Spotify Playlist</h1>
+        <h1 className="text-3xl font-bold mb-2">Spotifyze</h1>
         <p className="text-zinc-400">
-          Create Spotify playlists from your local music folders
+          Turn your local music into Spotify playlists
         </p>
       </div>
 
@@ -97,7 +97,7 @@ export function ConnectStep() {
               </li>
               <li>Create an app (any name)</li>
               <li>
-                Add <code className="text-green-300">http://localhost:8888/callback</code>{" "}
+                Add <code className="text-green-300">http://127.0.0.1:8888/callback</code>{" "}
                 as a Redirect URI
               </li>
               <li>Copy the Client ID and paste it below</li>
@@ -145,7 +145,7 @@ export function ConnectStep() {
             onClick={() => setStep("folders")}
             className="w-full py-3 bg-green-600 hover:bg-green-500 rounded-lg font-medium transition-colors"
           >
-            Next — Select Folders
+            Next — Add Music
           </button>
         </div>
       ) : (

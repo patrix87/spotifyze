@@ -5,7 +5,7 @@ import { ReviewStep } from "./components/ReviewStep";
 import { DoneStep } from "./components/DoneStep";
 
 const STEPS = ["connect", "folders", "review", "done"] as const;
-const STEP_LABELS = ["Connect", "Select Folders", "Review Matches", "Done"];
+const STEP_LABELS = ["Connect", "Add Music", "Review Matches", "Done"];
 
 export default function App() {
   const step = useAppStore((s) => s.step);

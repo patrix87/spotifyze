@@ -21,47 +21,18 @@ struct PlaylistExternalUrls {
     spotify: String,
 }
 
-async fn get_user_id(access_token: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get("https://api.spotify.com/v1/me")
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch user: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Failed to get user: {}", resp.status()));
-    }
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {e}"))?;
-
-    body["id"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Missing user id".to_string())
-}
-
 async fn create_spotify_playlist(
     access_token: &str,
-    user_id: &str,
     name: &str,
-    public: bool,
 ) -> Result<CreatePlaylistResponse, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "name": name,
-        "public": public,
-        "description": "Created with Folder to Spotify Playlist"
+        "description": "Created with Spotifyze"
     });
 
     let resp = client
-        .post(format!(
-            "https://api.spotify.com/v1/users/{user_id}/playlists"
-        ))
+        .post("https://api.spotify.com/v1/me/playlists")
         .bearer_auth(access_token)
         .json(&body)
         .send()
@@ -119,7 +90,6 @@ pub fn batch_uris(uris: &[String], batch_size: usize) -> Vec<Vec<String>> {
 pub async fn create_playlist(
     name: String,
     uris: Vec<String>,
-    public: bool,
     state: tauri::State<'_, Arc<Mutex<AuthState>>>,
 ) -> Result<PlaylistResult, String> {
     if uris.is_empty() {
@@ -127,8 +97,7 @@ pub async fn create_playlist(
     }
 
     let access_token = get_valid_token(&state.inner().clone()).await?;
-    let user_id = get_user_id(&access_token).await?;
-    let playlist = create_spotify_playlist(&access_token, &user_id, &name, public).await?;
+    let playlist = create_spotify_playlist(&access_token, &name).await?;
     add_tracks_to_playlist(&access_token, &playlist.id, &uris).await?;
 
     Ok(PlaylistResult {

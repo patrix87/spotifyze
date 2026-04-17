@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
 
-const REDIRECT_URI: &str = "http://localhost:8888/callback";
+const REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
 const AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const SCOPES: &str = "playlist-modify-public playlist-modify-private";
@@ -56,7 +56,7 @@ impl AuthState {
 }
 
 fn config_dir() -> Option<PathBuf> {
-    ProjectDirs::from("com", "folder-to-spotify", "Folder to Spotify Playlist")
+    ProjectDirs::from("com", "spotifyze", "Spotifyze")
         .map(|dirs| dirs.config_dir().to_path_buf())
 }
 

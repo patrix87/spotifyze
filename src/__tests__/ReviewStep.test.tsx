@@ -7,6 +7,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { FolderEntry, MatchResult } from "../lib/types";
 
 vi.mock("@tauri-apps/api/core");
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -40,12 +43,14 @@ const mockCandidate = (
   popularity: 80,
   score,
   external_url: null,
+  preview_url: null,
 });
 
 function setupFolderWithMatches(matchResults: MatchResult[]) {
   const folder: FolderEntry = {
     path: "/music/rock",
     name: "Rock",
+    source: "folder",
     scanResult: { tracks: [], skipped: [] },
     matchResults,
     playlistResult: null,
@@ -53,7 +58,6 @@ function setupFolderWithMatches(matchResults: MatchResult[]) {
   useAppStore.setState({
     step: "review",
     folders: [folder],
-    isPublic: false,
   });
 }
 
@@ -63,7 +67,6 @@ describe("ReviewStep", () => {
     useAppStore.setState({
       step: "review",
       folders: [],
-      isPublic: false,
     });
   });
 
@@ -81,12 +84,13 @@ describe("ReviewStep", () => {
     expect(screen.getByText(/1 of 1 tracks matched/)).toBeInTheDocument();
   });
 
-  it("shows legend with status icons", () => {
+  it("shows filter buttons", () => {
     setupFolderWithMatches([]);
     render(<ReviewStep />);
-    expect(screen.getByText("✓ Auto-matched")).toBeInTheDocument();
-    expect(screen.getByText("? Needs review")).toBeInTheDocument();
-    expect(screen.getByText("✕ Not found")).toBeInTheDocument();
+    expect(screen.getByText("All (0)")).toBeInTheDocument();
+    expect(screen.getByText(/Missing/)).toBeInTheDocument();
+    expect(screen.getByText(/Unsure/)).toBeInTheDocument();
+    expect(screen.getByText(/Matched/)).toBeInTheDocument();
   });
 
   it("renders tracks with correct status icons", () => {
@@ -147,14 +151,6 @@ describe("ReviewStep", () => {
     expect(useAppStore.getState().step).toBe("folders");
   });
 
-  it("has a public playlist checkbox", () => {
-    setupFolderWithMatches([]);
-    render(<ReviewStep />);
-    expect(
-      screen.getByLabelText("Make playlist public")
-    ).toBeInTheDocument();
-  });
-
   it("calls create_playlist on submit", async () => {
     mockInvoke.mockResolvedValue({
       playlist_id: "pl1",
@@ -179,7 +175,6 @@ describe("ReviewStep", () => {
       expect(mockInvoke).toHaveBeenCalledWith("create_playlist", {
         name: "Rock",
         uris: ["uri:1"],
-        public: false,
       });
     });
   });

@@ -5,6 +5,7 @@
       "label": "tauri:dev",
       "type": "shell",
       "command": "npm run tauri dev",
+      "options": {},
       "isBackground": true,
       "problemMatcher": {
         "owner": "rust",
@@ -25,6 +26,7 @@
       "label": "tauri:build",
       "type": "shell",
       "command": "npm run tauri build",
+      "options": {},
       "group": "build",
       "problemMatcher": ["$rustc"]
     },

@@ -1,15 +1,15 @@
 [package]
-name = "folder-to-spotify-playlist"
+name = "spotifyze"
 version = "0.1.0"
 edition = "2024"
-description = "Create Spotify playlists from local music folders"
+description = "Turn your local music into Spotify playlists"
 
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "folder-to-spotify-playlist"
+name = "spotifyze"
 path = "src/main.rs"
 
 [build-dependencies]

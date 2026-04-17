@@ -1,4 +1,5 @@
 mod auth;
+mod cache;
 mod matcher;
 mod playlist;
 mod scanner;
@@ -6,6 +7,16 @@ mod scanner;
 use auth::AuthState;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Convert an open.spotify.com URL to a spotify: URI and open via OS protocol handler.
+#[tauri::command]
+fn open_spotify_uri(url: String) -> Result<(), String> {
+    // https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6 → spotify:track:6rqhFgbbKwnb9MLmUQDhG6
+    let uri = url
+        .replace("https://open.spotify.com/", "spotify:")
+        .replace('/', ":");
+    open::that(&uri).map_err(|e| format!("Failed to open Spotify: {e}"))
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -19,8 +30,15 @@ pub fn run() {
             auth::logout,
             auth::check_auth,
             scanner::scan_folders,
+            scanner::scan_playlists,
+            scanner::read_audio_file,
             matcher::match_tracks,
+            matcher::search_manual,
             playlist::create_playlist,
+            cache::save_match_results,
+            cache::load_match_results,
+            cache::clear_match_cache,
+            open_spotify_uri,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

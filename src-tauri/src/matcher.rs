@@ -1,6 +1,7 @@
 use crate::auth::{get_valid_token, AuthState};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::sync::Mutex;
 
 use crate::scanner::TrackInfo;
@@ -18,6 +19,7 @@ pub struct MatchCandidate {
     pub popularity: u32,
     pub score: u8,
     pub external_url: Option<String>,
+    pub preview_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,23 +101,53 @@ fn score_candidate(track: &TrackInfo, candidate: &SpotifyTrack) -> u8 {
     total.min(100)
 }
 
+fn clean_title_for_search(title: &str) -> String {
+    let s = title.to_string();
+    // Strip leading track numbers like "04 - ", "15 "
+    let s = s.trim_start_matches(|c: char| c.is_ascii_digit())
+        .trim_start_matches(['-', '.', ' ']);
+    // Remove feat/ft sections and everything in brackets after them
+    let mut result = s.to_string();
+    for pattern in ["(feat.", "(ft.", "[feat.", "[ft.", "feat.", "ft.", "featuring"] {
+        if let Some(pos) = result.to_lowercase().find(pattern) {
+            result.truncate(pos);
+        }
+    }
+    result.trim().to_string()
+}
+
+fn clean_artist_for_search(artist: &str) -> String {
+    // Strip "Ft.", "Feat.", "and", "vs" suffixes that include featured artists
+    let mut result = artist.to_string();
+    for pattern in [" feat.", " feat ", " ft.", " ft ", " featuring "] {
+        if let Some(pos) = result.to_lowercase().find(pattern) {
+            result.truncate(pos);
+        }
+    }
+    result.trim().to_string()
+}
+
 fn build_search_query(track: &TrackInfo) -> String {
-    let artist = sanitize_query(&track.artist);
-    let title = sanitize_query(&track.title);
-    let mut query = format!("artist:{artist} track:{title}");
+    let artist = sanitize_query(&clean_artist_for_search(&track.artist));
+    let title = sanitize_query(&clean_title_for_search(&track.title));
+    let mut query = format!("artist:\"{artist}\" track:\"{title}\"");
 
     if let Some(ref album) = track.album {
         let album_clean = sanitize_query(album);
         if !album_clean.is_empty() {
-            query = format!("{query} album:{album_clean}");
+            query = format!("{query} album:\"{album_clean}\"");
         }
     }
     query
 }
 
 fn sanitize_query(s: &str) -> String {
-    s.replace(['"', '\''], "")
+    s.replace('"', "")
+        .replace('\'', "")
         .replace('&', "and")
+        .replace(['[', ']', '(', ')', '{', '}'], "")
+        .replace('!', "")
+        .replace('?', "")
         .trim()
         .to_string()
 }
@@ -139,6 +171,7 @@ struct SpotifyTrack {
     album: SpotifyAlbum,
     popularity: u32,
     external_urls: Option<SpotifyExternalUrls>,
+    preview_url: Option<String>,
 }
 
 impl SpotifyTrack {
@@ -222,6 +255,12 @@ async fn search_spotify(
     Ok(body.tracks.map(|t| t.items).unwrap_or_default())
 }
 
+fn build_fallback_query(track: &TrackInfo) -> String {
+    let artist = sanitize_query(&track.artist);
+    let title = sanitize_query(&track.title);
+    format!("{artist} {title}")
+}
+
 async fn match_single_track(
     access_token: &str,
     track: &TrackInfo,
@@ -231,7 +270,8 @@ async fn match_single_track(
 
     let spotify_tracks = match search_spotify(access_token, &query).await {
         Ok(tracks) => tracks,
-        Err(_) => {
+        Err(e) => {
+            eprintln!("[matcher] Search error for '{}' - '{}': {e}", track.artist, track.title);
             return MatchResult {
                 track: track.clone(),
                 status: MatchStatus::NotFound,
@@ -239,6 +279,17 @@ async fn match_single_track(
                 selected_uri: None,
             };
         }
+    };
+
+    // If field-filtered query returned nothing, try a plain text fallback
+    let spotify_tracks = if spotify_tracks.is_empty() {
+        let fallback = build_fallback_query(track);
+        match search_spotify(access_token, &fallback).await {
+            Ok(tracks) => tracks,
+            Err(_) => vec![]
+        }
+    } else {
+        spotify_tracks
     };
 
     if spotify_tracks.is_empty() {
@@ -271,6 +322,7 @@ async fn match_single_track(
                     .external_urls
                     .as_ref()
                     .and_then(|u| u.spotify.clone()),
+                preview_url: st.preview_url.clone(),
             }
         })
         .collect();
@@ -284,10 +336,7 @@ async fn match_single_track(
         MatchStatus::NeedsReview
     };
 
-    let selected_uri = match status {
-        MatchStatus::AutoMatched => candidates.first().map(|c| c.spotify_uri.clone()),
-        _ => None,
-    };
+    let selected_uri = candidates.first().map(|c| c.spotify_uri.clone());
 
     MatchResult {
         track: track.clone(),
@@ -297,17 +346,33 @@ async fn match_single_track(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct MatchProgress {
+    current: usize,
+    total: usize,
+    artist: String,
+    title: String,
+}
+
 #[tauri::command]
 pub async fn match_tracks(
+    app: tauri::AppHandle,
     tracks: Vec<TrackInfo>,
     confidence: Option<u8>,
     state: tauri::State<'_, Arc<Mutex<AuthState>>>,
 ) -> Result<Vec<MatchResult>, String> {
     let access_token = get_valid_token(&state.inner().clone()).await?;
     let confidence = confidence.unwrap_or(CONFIDENCE_THRESHOLD_DEFAULT);
+    let total = tracks.len();
 
-    let mut results = Vec::with_capacity(tracks.len());
-    for track in &tracks {
+    let mut results = Vec::with_capacity(total);
+    for (i, track) in tracks.iter().enumerate() {
+        let _ = app.emit("match-progress", MatchProgress {
+            current: i + 1,
+            total,
+            artist: track.artist.clone(),
+            title: track.title.clone(),
+        });
         let result = match_single_track(&access_token, track, confidence).await;
         results.push(result);
         // Small delay to avoid rate limiting
@@ -315,6 +380,38 @@ pub async fn match_tracks(
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+pub async fn search_manual(
+    query: String,
+    state: tauri::State<'_, Arc<Mutex<AuthState>>>,
+) -> Result<Vec<MatchCandidate>, String> {
+    let access_token = get_valid_token(&state.inner().clone()).await?;
+    let spotify_tracks = search_spotify(&access_token, &query).await?;
+
+    let mut candidates: Vec<MatchCandidate> = spotify_tracks
+        .iter()
+        .map(|st| MatchCandidate {
+            spotify_uri: st.uri.clone(),
+            name: st.name.clone(),
+            artist: st.artist_name(),
+            album: st.album.name.clone(),
+            album_type: st.album.album_type.clone(),
+            release_year: st
+                .album
+                .release_date
+                .as_ref()
+                .map(|d| d.chars().take(4).collect()),
+            popularity: st.popularity,
+            score: 0,
+            external_url: st.external_urls.as_ref().and_then(|u| u.spotify.clone()),
+            preview_url: st.preview_url.clone(),
+        })
+        .collect();
+
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.popularity));
+    Ok(candidates)
 }
 
 #[cfg(test)]
@@ -354,6 +451,7 @@ mod tests {
             },
             popularity,
             external_urls: None,
+            preview_url: None,
         }
     }
 
@@ -436,7 +534,7 @@ mod tests {
     fn test_build_search_query_basic() {
         let track = make_track("Pink Floyd", "Comfortably Numb", None);
         let query = build_search_query(&track);
-        assert_eq!(query, "artist:Pink Floyd track:Comfortably Numb");
+        assert_eq!(query, r#"artist:"Pink Floyd" track:"Comfortably Numb""#);
     }
 
     #[test]
@@ -445,8 +543,29 @@ mod tests {
         let query = build_search_query(&track);
         assert_eq!(
             query,
-            "artist:Pink Floyd track:Comfortably Numb album:The Wall"
+            r#"artist:"Pink Floyd" track:"Comfortably Numb" album:"The Wall""#
         );
+    }
+
+    #[test]
+    fn test_build_search_query_strips_feat() {
+        let track = make_track("Eminem Ft. Rihanna", "Love The Way You Lie Part 1", None);
+        let query = build_search_query(&track);
+        assert_eq!(query, r#"artist:"Eminem" track:"Love The Way You Lie Part 1""#);
+    }
+
+    #[test]
+    fn test_build_search_query_strips_title_feat() {
+        let track = make_track("Naughty Boy", "Lifted Ft. Emeli Sandé", None);
+        let query = build_search_query(&track);
+        assert_eq!(query, r#"artist:"Naughty Boy" track:"Lifted""#);
+    }
+
+    #[test]
+    fn test_build_search_query_strips_track_number() {
+        let track = make_track("Pink Floyd", "04 - Comfortably Numb", None);
+        let query = build_search_query(&track);
+        assert_eq!(query, r#"artist:"Pink Floyd" track:"Comfortably Numb""#);
     }
 
     #[test]
@@ -455,6 +574,9 @@ mod tests {
         assert_eq!(sanitize_query(r#"He said "hello""#), "He said hello");
         assert_eq!(sanitize_query("Rock & Roll"), "Rock and Roll");
         assert_eq!(sanitize_query("  spaced  "), "spaced");
+        assert_eq!(sanitize_query("Smilin!!"), "Smilin");
+        assert_eq!(sanitize_query("Where Is The Love?"), "Where Is The Love");
+        assert_eq!(sanitize_query("[Deluxe Edition]"), "Deluxe Edition");
     }
 
     #[test]

@@ -5,6 +5,10 @@ import { useAppStore } from "../lib/store";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core");
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
+vi.mock("@tauri-apps/plugin-dialog");
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -18,7 +22,7 @@ describe("App", () => {
   it("renders the step indicator with 4 steps", () => {
     render(<App />);
     expect(screen.getByText("Connect")).toBeInTheDocument();
-    expect(screen.getByText("Select Folders")).toBeInTheDocument();
+    expect(screen.getByText("Add Music")).toBeInTheDocument();
     expect(screen.getByText("Review Matches")).toBeInTheDocument();
     expect(screen.getByText("Done")).toBeInTheDocument();
   });
@@ -27,7 +31,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => {
       expect(
-        screen.getByText("Folder to Spotify Playlist")
+        screen.getByText("Spotifyze")
       ).toBeInTheDocument();
     });
   });
@@ -36,6 +40,6 @@ describe("App", () => {
     render(<App />);
     const connectLabel = screen.getByText("Connect");
     expect(connectLabel).toHaveClass("text-white");
-    expect(screen.getByText("Select Folders")).toHaveClass("text-zinc-500");
+    expect(screen.getByText("Add Music")).toHaveClass("text-zinc-500");
   });
 });
