@@ -1,6 +1,6 @@
 [package]
 name = "spotifyze"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Turn your local music into Spotify playlists"
 
