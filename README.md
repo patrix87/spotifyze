@@ -23,6 +23,8 @@ A desktop app that imports your local music library into Spotify. It reads metad
 
 Grab the latest release for your platform from [GitHub Releases](../../releases).
 
+> **Note:** The installers are not code-signed. On Windows you may see a SmartScreen warning — click "More info" then "Run anyway" to proceed. On macOS, right-click the app and select "Open" to bypass Gatekeeper.
+
 | Platform              | File                  |
 |-----------------------|-----------------------|
 | Windows               | `.exe` or `.msi`      |
