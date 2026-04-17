@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tauri Dev (Debug)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/folder-to-spotify-playlist.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "tauri:dev",
+      "env": {
+        "RUST_BACKTRACE": "1"
+      }
+    },
+    {
+      "name": "Cargo Test (Debug)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "--no-run", "--lib"],
+        "filter": {
+          "kind": "lib"
+        }
+      },
+      "cwd": "${workspaceFolder}/src-tauri",
+      "env": {
+        "RUST_BACKTRACE": "1"
+      }
+    }
+  ]
+}

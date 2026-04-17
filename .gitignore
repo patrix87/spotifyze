@@ -21,7 +21,6 @@ src-tauri/target/
 .spotify_token
 
 # Editor
-.vscode/
 *.swp
 *.swo
 
