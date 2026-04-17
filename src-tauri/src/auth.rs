@@ -161,6 +161,7 @@ fn wait_for_callback() -> Result<String, String> {
 }
 
 async fn exchange_code(
+    token_url: &str,
     client_id: &str,
     code: &str,
     verifier: &str,
@@ -175,7 +176,7 @@ async fn exchange_code(
     ];
 
     let resp = client
-        .post(TOKEN_URL)
+        .post(token_url)
         .form(&params)
         .send()
         .await
@@ -207,7 +208,7 @@ async fn exchange_code(
     })
 }
 
-pub async fn refresh_token(client_id: &str, refresh: &str) -> Result<SpotifyToken, String> {
+pub async fn refresh_token(token_url: &str, client_id: &str, refresh: &str) -> Result<SpotifyToken, String> {
     let client = reqwest::Client::new();
     let params = [
         ("grant_type", "refresh_token"),
@@ -216,7 +217,7 @@ pub async fn refresh_token(client_id: &str, refresh: &str) -> Result<SpotifyToke
     ];
 
     let resp = client
-        .post(TOKEN_URL)
+        .post(token_url)
         .form(&params)
         .send()
         .await
@@ -269,7 +270,7 @@ pub async fn get_valid_token(state: &Arc<Mutex<AuthState>>) -> Result<String, St
         }
 
         if let Some(ref refresh) = token.refresh_token {
-            let new_token = refresh_token(&client_id, refresh).await?;
+            let new_token = refresh_token(TOKEN_URL, &client_id, refresh).await?;
             save_token(&new_token)?;
             let access = new_token.access_token.clone();
             guard.token = Some(new_token);
@@ -326,10 +327,10 @@ pub async fn login(state: tauri::State<'_, Arc<Mutex<AuthState>>>) -> Result<Use
         .await
         .map_err(|e| format!("Task error: {e}"))??;
 
-    let token = exchange_code(&client_id, &code, &verifier).await?;
+    let token = exchange_code(TOKEN_URL, &client_id, &code, &verifier).await?;
     save_token(&token)?;
 
-    let profile = fetch_profile(&token.access_token).await?;
+    let profile = fetch_profile("https://api.spotify.com", &token.access_token).await?;
 
     {
         let mut guard = state.lock().await;
@@ -357,16 +358,16 @@ pub async fn check_auth(
         Ok(t) => t,
         Err(_) => return Ok(None),
     };
-    match fetch_profile(&access_token).await {
+    match fetch_profile("https://api.spotify.com", &access_token).await {
         Ok(profile) => Ok(Some(profile)),
         Err(_) => Ok(None),
     }
 }
 
-pub async fn fetch_profile(access_token: &str) -> Result<UserProfile, String> {
+pub async fn fetch_profile(api_base: &str, access_token: &str) -> Result<UserProfile, String> {
     let client = reqwest::Client::new();
     let resp = client
-        .get("https://api.spotify.com/v1/me")
+        .get(format!("{api_base}/v1/me"))
         .bearer_auth(access_token)
         .send()
         .await
@@ -443,5 +444,163 @@ mod tests {
         let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
         let expected = generate_pkce_challenge(verifier);
         assert_eq!(params.get("code_challenge").unwrap().as_ref(), expected);
+    }
+
+    // === Async API tests using mockito ===
+
+    fn token_response_json(access: &str, refresh: Option<&str>) -> String {
+        let refresh_field = match refresh {
+            Some(r) => format!(r#","refresh_token":"{r}""#),
+            None => String::new(),
+        };
+        format!(r#"{{"access_token":"{access}","token_type":"Bearer","expires_in":3600{refresh_field}}}"#)
+    }
+
+    #[tokio::test]
+    async fn test_exchange_code_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(token_response_json("access_123", Some("refresh_456")))
+            .create_async()
+            .await;
+
+        let token_url = format!("{}/api/token", server.url());
+        let result = exchange_code(&token_url, "client_id", "auth_code", "verifier").await;
+        mock.assert_async().await;
+        let token = result.unwrap();
+        assert_eq!(token.access_token, "access_123");
+        assert_eq!(token.refresh_token.as_deref(), Some("refresh_456"));
+        assert!(token.expires_at > 0);
+    }
+
+    #[tokio::test]
+    async fn test_exchange_code_failure() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/token")
+            .with_status(400)
+            .with_body(r#"{"error":"invalid_grant"}"#)
+            .create_async()
+            .await;
+
+        let token_url = format!("{}/api/token", server.url());
+        let result = exchange_code(&token_url, "client_id", "bad_code", "verifier").await;
+        mock.assert_async().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid_grant"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(token_response_json("new_access", Some("new_refresh")))
+            .create_async()
+            .await;
+
+        let token_url = format!("{}/api/token", server.url());
+        let result = refresh_token(&token_url, "client_id", "old_refresh").await;
+        mock.assert_async().await;
+        let token = result.unwrap();
+        assert_eq!(token.access_token, "new_access");
+        assert_eq!(token.refresh_token.as_deref(), Some("new_refresh"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_preserves_old_refresh() {
+        let mut server = mockito::Server::new_async().await;
+        // Server returns no refresh_token — should keep the old one
+        let mock = server
+            .mock("POST", "/api/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(token_response_json("new_access", None))
+            .create_async()
+            .await;
+
+        let token_url = format!("{}/api/token", server.url());
+        let result = refresh_token(&token_url, "client_id", "old_refresh").await;
+        mock.assert_async().await;
+        let token = result.unwrap();
+        assert_eq!(token.access_token, "new_access");
+        assert_eq!(token.refresh_token.as_deref(), Some("old_refresh"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_failure() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/token")
+            .with_status(401)
+            .with_body("Unauthorized")
+            .create_async()
+            .await;
+
+        let token_url = format!("{}/api/token", server.url());
+        let result = refresh_token(&token_url, "client_id", "bad_refresh").await;
+        mock.assert_async().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unauthorized"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_profile_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/me")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"user123","display_name":"Test User","images":[{"url":"https://example.com/pic.jpg","height":300,"width":300}]}"#)
+            .create_async()
+            .await;
+
+        let result = fetch_profile(&server.url(), "fake_token").await;
+        mock.assert_async().await;
+        let profile = result.unwrap();
+        assert_eq!(profile.id, "user123");
+        assert_eq!(profile.display_name.as_deref(), Some("Test User"));
+        assert_eq!(profile.images.len(), 1);
+        assert_eq!(profile.images[0].url, "https://example.com/pic.jpg");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_profile_no_display_name() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/me")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"user456","images":[]}"#)
+            .create_async()
+            .await;
+
+        let result = fetch_profile(&server.url(), "fake_token").await;
+        mock.assert_async().await;
+        let profile = result.unwrap();
+        assert_eq!(profile.id, "user456");
+        assert!(profile.display_name.is_none());
+        assert!(profile.images.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_profile_failure() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/me")
+            .with_status(401)
+            .with_body("Token expired")
+            .create_async()
+            .await;
+
+        let result = fetch_profile(&server.url(), "bad_token").await;
+        mock.assert_async().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Token expired"));
     }
 }

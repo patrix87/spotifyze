@@ -199,12 +199,13 @@ struct SpotifyExternalUrls {
 }
 
 async fn search_spotify(
+    api_base: &str,
     access_token: &str,
     query: &str,
 ) -> Result<Vec<SpotifyTrack>, String> {
     let client = reqwest::Client::new();
     let resp = client
-        .get("https://api.spotify.com/v1/search")
+        .get(format!("{api_base}/v1/search"))
         .bearer_auth(access_token)
         .query(&[("q", query), ("type", "track"), ("limit", "10")])
         .send()
@@ -222,7 +223,7 @@ async fn search_spotify(
         tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
 
         let resp2 = client
-            .get("https://api.spotify.com/v1/search")
+            .get(format!("{api_base}/v1/search"))
             .bearer_auth(access_token)
             .query(&[("q", query), ("type", "track"), ("limit", "10")])
             .send()
@@ -260,13 +261,14 @@ fn build_fallback_query(track: &TrackInfo) -> String {
 }
 
 async fn match_single_track(
+    api_base: &str,
     access_token: &str,
     track: &TrackInfo,
     confidence: u8,
 ) -> MatchResult {
     let query = build_search_query(track);
 
-    let spotify_tracks = match search_spotify(access_token, &query).await {
+    let spotify_tracks = match search_spotify(api_base, access_token, &query).await {
         Ok(tracks) => tracks,
         Err(e) => {
             eprintln!("[matcher] Search error for '{}' - '{}': {e}", track.artist, track.title);
@@ -282,7 +284,7 @@ async fn match_single_track(
     // If field-filtered query returned nothing, try a plain text fallback
     let spotify_tracks = if spotify_tracks.is_empty() {
         let fallback = build_fallback_query(track);
-        search_spotify(access_token, &fallback).await.unwrap_or_default()
+        search_spotify(api_base, access_token, &fallback).await.unwrap_or_default()
     } else {
         spotify_tracks
     };
@@ -368,7 +370,7 @@ pub async fn match_tracks(
             artist: track.artist.clone(),
             title: track.title.clone(),
         });
-        let result = match_single_track(&access_token, track, confidence).await;
+        let result = match_single_track("https://api.spotify.com", &access_token, track, confidence).await;
         results.push(result);
         // Small delay to avoid rate limiting
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -383,7 +385,7 @@ pub async fn search_manual(
     state: tauri::State<'_, Arc<Mutex<AuthState>>>,
 ) -> Result<Vec<MatchCandidate>, String> {
     let access_token = get_valid_token(&state.inner().clone()).await?;
-    let spotify_tracks = search_spotify(&access_token, &query).await?;
+    let spotify_tracks = search_spotify("https://api.spotify.com", &access_token, &query).await?;
 
     let mut candidates: Vec<MatchCandidate> = spotify_tracks
         .iter()
@@ -692,5 +694,270 @@ mod tests {
     #[test]
     fn test_sanitize_query_curly_braces() {
         assert_eq!(sanitize_query("{Special} Edition"), "Special Edition");
+    }
+
+    // === Async API tests using mockito ===
+
+    fn search_response_json(tracks: &[(&str, &str, &str, &str, u32)]) -> String {
+        let items: Vec<String> = tracks
+            .iter()
+            .map(|(uri, name, artist, album, pop)| {
+                format!(
+                    r#"{{"uri":"spotify:track:{uri}","name":"{name}","artists":[{{"name":"{artist}"}}],"album":{{"name":"{album}","album_type":"album","release_date":"2020-01-01"}},"popularity":{pop},"external_urls":{{"spotify":"https://open.spotify.com/track/{uri}"}},"preview_url":null}}"#
+                )
+            })
+            .collect();
+        format!(r#"{{"tracks":{{"items":[{}]}}}}"#, items.join(","))
+    }
+
+    #[tokio::test]
+    async fn test_search_spotify_returns_tracks() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_json(&[(
+                "abc123",
+                "Comfortably Numb",
+                "Pink Floyd",
+                "The Wall",
+                80,
+            )]))
+            .create_async()
+            .await;
+
+        let result = search_spotify(&server.url(), "fake_token", "test query").await;
+        mock.assert_async().await;
+        let tracks = result.unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name, "Comfortably Numb");
+        assert_eq!(tracks[0].artist_name(), "Pink Floyd");
+        assert_eq!(tracks[0].album.name, "The Wall");
+        assert_eq!(tracks[0].popularity, 80);
+    }
+
+    #[tokio::test]
+    async fn test_search_spotify_empty_results() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tracks":{"items":[]}}"#)
+            .create_async()
+            .await;
+
+        let result = search_spotify(&server.url(), "fake_token", "nonexistent").await;
+        mock.assert_async().await;
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_spotify_server_error() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let result = search_spotify(&server.url(), "fake_token", "test").await;
+        mock.assert_async().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn test_search_spotify_rate_limit_then_error() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(429)
+            .with_header("retry-after", "0")
+            .create_async()
+            .await;
+
+        let result = search_spotify(&server.url(), "fake_token", "test").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("after retry"));
+    }
+
+    #[tokio::test]
+    async fn test_search_spotify_multiple_tracks() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_json(&[
+                ("t1", "Song A", "Artist A", "Album A", 90),
+                ("t2", "Song B", "Artist B", "Album B", 50),
+                ("t3", "Song C", "Artist C", "Album C", 10),
+            ]))
+            .create_async()
+            .await;
+
+        let tracks = search_spotify(&server.url(), "token", "query").await.unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[0].name, "Song A");
+        assert_eq!(tracks[2].name, "Song C");
+    }
+
+    #[tokio::test]
+    async fn test_match_single_track_auto_matched() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_json(&[(
+                "abc",
+                "Comfortably Numb",
+                "Pink Floyd",
+                "The Wall",
+                80,
+            )]))
+            .create_async()
+            .await;
+
+        let track = make_track("Pink Floyd", "Comfortably Numb", Some("The Wall"));
+        let result = match_single_track(&server.url(), "fake_token", &track, 70).await;
+        assert!(matches!(result.status, MatchStatus::AutoMatched));
+        assert!(!result.candidates.is_empty());
+        assert!(result.selected_uri.is_some());
+        assert!(result.candidates[0].score >= 70);
+    }
+
+    #[tokio::test]
+    async fn test_match_single_track_needs_review() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_json(&[(
+                "abc",
+                "Comfortably Numb",
+                "Some Cover Band",
+                "Covers",
+                20,
+            )]))
+            .create_async()
+            .await;
+
+        let track = make_track("Pink Floyd", "Comfortably Numb", Some("The Wall"));
+        let result = match_single_track(&server.url(), "fake_token", &track, 95).await;
+        assert!(matches!(result.status, MatchStatus::NeedsReview));
+        assert!(!result.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_match_single_track_not_found() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tracks":{"items":[]}}"#)
+            .create_async()
+            .await;
+
+        let track = make_track("Unknown Artist", "Unknown Song", None);
+        let result = match_single_track(&server.url(), "fake_token", &track, 80).await;
+        assert!(matches!(result.status, MatchStatus::NotFound));
+        assert!(result.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_match_single_track_fallback_succeeds() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Fallback query (plain text) returns results — created FIRST (LIFO bottom)
+        let _fallback_mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_json(&[(
+                "abc",
+                "Song",
+                "Artist",
+                "Album",
+                80,
+            )]))
+            .create_async()
+            .await;
+
+        // Primary query (with field syntax artist:"...") returns empty — created SECOND (LIFO top)
+        let _primary_mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Regex("q=artist%3A".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tracks":{"items":[]}}"#)
+            .create_async()
+            .await;
+
+        let track = make_track("Artist", "Song", None);
+        let result = match_single_track(&server.url(), "fake_token", &track, 70).await;
+        assert!(!matches!(result.status, MatchStatus::NotFound));
+        assert!(!result.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_match_single_track_candidates_sorted_and_truncated() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_json(&[
+                ("t1", "Song", "Artist", "Album", 90),
+                ("t2", "Song", "Artist", "Album", 80),
+                ("t3", "Song", "Artist", "Album", 70),
+                ("t4", "Song", "Artist", "Album", 60),
+                ("t5", "Song", "Artist", "Album", 50),
+                ("t6", "Song", "Artist", "Album", 40),
+                ("t7", "Song", "Artist", "Album", 30),
+            ]))
+            .create_async()
+            .await;
+
+        let track = make_track("Artist", "Song", Some("Album"));
+        let result = match_single_track(&server.url(), "fake_token", &track, 50).await;
+        // Should be truncated to 5 candidates
+        assert!(result.candidates.len() <= 5);
+        // Should be sorted by score descending
+        for w in result.candidates.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_match_single_track_search_error_returns_not_found() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/v1/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("error")
+            .create_async()
+            .await;
+
+        let track = make_track("Artist", "Song", None);
+        let result = match_single_track(&server.url(), "fake_token", &track, 80).await;
+        assert!(matches!(result.status, MatchStatus::NotFound));
+        assert!(result.candidates.is_empty());
     }
 }
