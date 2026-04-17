@@ -5,6 +5,8 @@ mod playlist;
 mod scanner;
 
 use auth::AuthState;
+use cache::QueryCacheState;
+use matcher::MatchCancellation;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -23,6 +25,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(Mutex::new(AuthState::new())))
+        .manage(Arc::new(MatchCancellation::new()))
+        .manage(QueryCacheState::new())
         .invoke_handler(tauri::generate_handler![
             auth::set_client_id,
             auth::get_client_id,
@@ -33,10 +37,9 @@ pub fn run() {
             scanner::scan_playlists,
             scanner::read_audio_file,
             matcher::match_tracks,
+            matcher::cancel_matching,
             matcher::search_manual,
             playlist::create_playlist,
-            cache::save_match_results,
-            cache::load_match_results,
             cache::clear_match_cache,
             open_spotify_uri,
         ])

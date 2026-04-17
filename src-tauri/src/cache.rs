@@ -1,14 +1,15 @@
-use crate::matcher::MatchResult;
+use crate::matcher::MatchCandidate;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct MatchCache {
-    /// Map of folder path → cached match results
-    folders: HashMap<String, Vec<MatchResult>>,
+struct QueryCache {
+    /// Map of normalized search query → cached Spotify candidates
+    queries: HashMap<String, Vec<MatchCandidate>>,
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -17,24 +18,24 @@ fn cache_dir() -> Option<PathBuf> {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    cache_dir().map(|d| d.join("match_cache.json"))
+    cache_dir().map(|d| d.join("query_cache.json"))
 }
 
-fn load_cache_from(path: &std::path::Path) -> MatchCache {
+fn load_cache_from(path: &std::path::Path) -> QueryCache {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_else(|| MatchCache { folders: HashMap::new() })
+        .unwrap_or_else(|| QueryCache { queries: HashMap::new() })
 }
 
-fn load_cache() -> MatchCache {
+fn load_cache() -> QueryCache {
     let Some(path) = cache_path() else {
-        return MatchCache { folders: HashMap::new() };
+        return QueryCache { queries: HashMap::new() };
     };
     load_cache_from(&path)
 }
 
-fn save_cache_to(path: &std::path::Path, cache: &MatchCache) -> Result<(), String> {
+fn save_cache_to(path: &std::path::Path, cache: &QueryCache) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create cache dir: {e}"))?;
     }
@@ -43,67 +44,83 @@ fn save_cache_to(path: &std::path::Path, cache: &MatchCache) -> Result<(), Strin
     Ok(())
 }
 
-fn save_cache(cache: &MatchCache) -> Result<(), String> {
+fn save_cache(cache: &QueryCache) -> Result<(), String> {
     let path = cache_path().ok_or("Could not determine cache directory")?;
     save_cache_to(&path, cache)
 }
 
-#[tauri::command]
-pub fn save_match_results(folder_path: String, results: Vec<MatchResult>) -> Result<(), String> {
-    let mut cache = load_cache();
-    cache.folders.insert(folder_path, results);
-    save_cache(&cache)
+/// In-memory + disk query cache, shared across commands.
+#[derive(Clone)]
+pub struct QueryCacheState {
+    inner: Arc<Mutex<QueryCache>>,
 }
 
-#[tauri::command]
-pub fn load_match_results(folder_path: String) -> Result<Option<Vec<MatchResult>>, String> {
-    let cache = load_cache();
-    Ok(cache.folders.get(&folder_path).cloned())
-}
-
-#[tauri::command]
-pub fn clear_match_cache() -> Result<(), String> {
-    if let Some(path) = cache_path()
-        && path.exists()
-    {
-        fs::remove_file(&path).map_err(|e| format!("Failed to clear cache: {e}"))?;
+impl QueryCacheState {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(load_cache())),
+        }
     }
+
+    /// Look up cached candidates for a query.
+    pub fn get(&self, query: &str) -> Option<Vec<MatchCandidate>> {
+        self.inner.lock().ok()?.queries.get(query).cloned()
+    }
+
+    /// Insert query results and persist to disk.
+    pub fn insert(&self, query: String, candidates: Vec<MatchCandidate>) {
+        if let Ok(mut cache) = self.inner.lock() {
+            cache.queries.insert(query, candidates);
+            let _ = save_cache(&cache);
+        }
+    }
+
+    /// Clear all cached queries.
+    pub fn clear(&self) {
+        if let Ok(mut cache) = self.inner.lock() {
+            cache.queries.clear();
+        }
+        if let Some(path) = cache_path() {
+            if path.exists() {
+                let _ = fs::remove_file(&path);
+            }
+        }
+        // Also remove legacy folder-based cache if present
+        if let Some(dir) = cache_dir() {
+            let legacy = dir.join("match_cache.json");
+            if legacy.exists() {
+                let _ = fs::remove_file(&legacy);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn clear_match_cache(
+    cache: tauri::State<'_, QueryCacheState>,
+) -> Result<(), String> {
+    cache.clear();
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matcher::{MatchCandidate, MatchStatus};
-    use crate::scanner::TrackInfo;
+    use crate::matcher::MatchCandidate;
 
-    fn make_result(artist: &str, title: &str) -> MatchResult {
-        MatchResult {
-            track: TrackInfo {
-                path: format!("/music/{artist}/{title}.mp3"),
-                file_name: format!("{title}.mp3"),
-                artist: artist.to_string(),
-                title: title.to_string(),
-                album: None,
-                album_artist: None,
-                track_number: None,
-                year: None,
-            },
-            status: MatchStatus::AutoMatched,
-            candidates: vec![MatchCandidate {
-                spotify_uri: format!("spotify:track:{title}"),
-                name: title.to_string(),
-                artist: artist.to_string(),
-                album: "Album".to_string(),
-                album_type: Some("album".to_string()),
-                release_year: Some("2020".to_string()),
-                popularity: 80,
-                score: 90,
-                external_url: None,
-                preview_url: None,
-            }],
-            selected_uri: Some(format!("spotify:track:{title}")),
-        }
+    fn make_candidates(name: &str) -> Vec<MatchCandidate> {
+        vec![MatchCandidate {
+            spotify_uri: format!("spotify:track:{name}"),
+            name: name.to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            album_type: Some("album".to_string()),
+            release_year: Some("2020".to_string()),
+            popularity: 80,
+            score: 90,
+            external_url: None,
+            preview_url: None,
+        }]
     }
 
     #[test]
@@ -111,17 +128,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
 
-        let results = vec![make_result("Artist", "Song")];
-        let mut cache = MatchCache { folders: HashMap::new() };
-        cache.folders.insert("/music/folder".to_string(), results.clone());
+        let mut cache = QueryCache { queries: HashMap::new() };
+        cache.queries.insert("artist:\"A\" track:\"S\"".to_string(), make_candidates("S"));
 
         save_cache_to(&path, &cache).unwrap();
 
         let loaded = load_cache_from(&path);
-        let loaded_results = loaded.folders.get("/music/folder").unwrap();
-        assert_eq!(loaded_results.len(), 1);
-        assert_eq!(loaded_results[0].track.title, "Song");
-        assert_eq!(loaded_results[0].track.artist, "Artist");
+        let loaded_candidates = loaded.queries.get("artist:\"A\" track:\"S\"").unwrap();
+        assert_eq!(loaded_candidates.len(), 1);
+        assert_eq!(loaded_candidates[0].name, "S");
     }
 
     #[test]
@@ -130,7 +145,7 @@ mod tests {
         let path = dir.path().join("nonexistent.json");
 
         let cache = load_cache_from(&path);
-        assert!(cache.folders.is_empty());
+        assert!(cache.queries.is_empty());
     }
 
     #[test]
@@ -138,29 +153,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("deep").join("nested").join("cache.json");
 
-        let cache = MatchCache { folders: HashMap::new() };
+        let cache = QueryCache { queries: HashMap::new() };
         save_cache_to(&path, &cache).unwrap();
         assert!(path.exists());
     }
 
     #[test]
-    fn test_save_and_load_multiple_folders() {
+    fn test_save_and_load_multiple_queries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
 
-        let mut cache = MatchCache { folders: HashMap::new() };
-        cache.folders.insert("/folder1".to_string(), vec![make_result("A1", "S1")]);
-        cache.folders.insert("/folder2".to_string(), vec![
-            make_result("A2", "S2"),
-            make_result("A3", "S3"),
-        ]);
+        let mut cache = QueryCache { queries: HashMap::new() };
+        cache.queries.insert("query1".to_string(), make_candidates("S1"));
+        cache.queries.insert("query2".to_string(), make_candidates("S2"));
 
         save_cache_to(&path, &cache).unwrap();
 
         let loaded = load_cache_from(&path);
-        assert_eq!(loaded.folders.len(), 2);
-        assert_eq!(loaded.folders["/folder1"].len(), 1);
-        assert_eq!(loaded.folders["/folder2"].len(), 2);
+        assert_eq!(loaded.queries.len(), 2);
+        assert_eq!(loaded.queries["query1"].len(), 1);
+        assert_eq!(loaded.queries["query2"].len(), 1);
     }
 
     #[test]
@@ -170,7 +182,7 @@ mod tests {
         fs::write(&path, "not valid json").unwrap();
 
         let cache = load_cache_from(&path);
-        assert!(cache.folders.is_empty());
+        assert!(cache.queries.is_empty());
     }
 
     #[test]
@@ -178,7 +190,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
 
-        let cache = MatchCache { folders: HashMap::new() };
+        let cache = QueryCache { queries: HashMap::new() };
         save_cache_to(&path, &cache).unwrap();
         assert!(path.exists());
 

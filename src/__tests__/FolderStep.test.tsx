@@ -188,9 +188,7 @@ describe("FolderStep", () => {
 
     mockInvoke
       .mockResolvedValueOnce([scanResult]) // scan_folders
-      .mockResolvedValueOnce(null) // load_match_results (cache miss)
-      .mockResolvedValueOnce(matchResults) // match_tracks
-      .mockResolvedValueOnce(undefined); // save_match_results
+      .mockResolvedValueOnce(matchResults); // match_tracks
 
     useAppStore.getState().addFolder("/home/user/Music/Rock");
     const user = userEvent.setup();
@@ -208,52 +206,6 @@ describe("FolderStep", () => {
     await waitFor(() => {
       expect(useAppStore.getState().step).toBe("review");
     });
-  });
-
-  it("uses cached match results when available", async () => {
-    const scanResult = {
-      tracks: [
-        {
-          path: "/a.mp3",
-          file_name: "a.mp3",
-          artist: "A",
-          title: "Song",
-          album: null,
-          album_artist: null,
-          track_number: null,
-          year: null,
-        },
-      ],
-      skipped: [],
-    };
-    const cachedResults = [
-      {
-        track: scanResult.tracks[0],
-        status: "AutoMatched",
-        candidates: [],
-        selected_uri: "uri:1",
-      },
-    ];
-
-    mockInvoke
-      .mockResolvedValueOnce([scanResult]) // scan_folders
-      .mockResolvedValueOnce(cachedResults); // load_match_results (cache hit)
-
-    useAppStore.getState().addFolder("/home/user/Music/Rock");
-    const user = userEvent.setup();
-    render(<FolderStep />);
-
-    await user.click(screen.getByText("Scan & Match"));
-
-    await waitFor(() => {
-      expect(useAppStore.getState().step).toBe("review");
-    });
-
-    // match_tracks should NOT have been called
-    expect(mockInvoke).not.toHaveBeenCalledWith(
-      "match_tracks",
-      expect.anything()
-    );
   });
 
   it("shows error when scan fails", async () => {
@@ -307,12 +259,8 @@ describe("FolderStep", () => {
     mockInvoke
       .mockResolvedValueOnce([folderScan]) // scan_folders
       .mockResolvedValueOnce([playlistScan]) // scan_playlists
-      .mockResolvedValueOnce(null) // load_match_results folder
       .mockResolvedValueOnce([]) // match_tracks folder
-      .mockResolvedValueOnce(undefined) // save_match_results folder
-      .mockResolvedValueOnce(null) // load_match_results playlist
-      .mockResolvedValueOnce([]) // match_tracks playlist
-      .mockResolvedValueOnce(undefined); // save_match_results playlist
+      .mockResolvedValueOnce([]); // match_tracks playlist
 
     useAppStore.getState().addFolder("/home/user/Music/Rock");
     useAppStore.getState().addPlaylist("/home/user/chill.m3u");

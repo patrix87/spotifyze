@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -32,20 +32,24 @@ export function FolderStep() {
     title: string;
   } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const activeGenRef = useRef(0);
 
   useEffect(() => {
+    const gen = activeGenRef.current;
     const unlisten = listen<{
       current: number;
       total: number;
       artist: string;
       title: string;
     }>("match-progress", (event) => {
-      setMatchProgress(event.payload);
+      if (activeGenRef.current === gen) {
+        setMatchProgress(event.payload);
+      }
     });
     return () => {
       unlisten.then((f) => f());
     };
-  }, []);
+  }, [matching]);
 
   // Drag-and-drop from OS
   useEffect(() => {
@@ -60,8 +64,12 @@ export function FolderStep() {
           if (lower.endsWith(".m3u") || lower.endsWith(".m3u8")) {
             addPlaylist(path);
           } else {
-            // Assume directory or treat as folder
-            addFolder(path);
+            // Check if the last segment has a file extension
+            const lastSegment = path.split(/[/\\]/).pop() ?? "";
+            if (!lastSegment.includes(".")) {
+              addFolder(path);
+            }
+            // Silently ignore non-playlist files
           }
         }
       } else {
@@ -97,8 +105,24 @@ export function FolderStep() {
     }
   }
 
+  async function handleCancel() {
+    activeGenRef.current += 1;
+    setScanning(false);
+    setMatching(false);
+    setMatchProgress(null);
+    try {
+      await invoke("cancel_matching");
+    } catch {
+      // Best-effort cancellation
+    }
+  }
+
   async function handleScanAndMatch() {
+    activeGenRef.current += 1;
+    const gen = activeGenRef.current;
     setError(null);
+    setScanResults(new Map());
+    setMatchProgress(null);
     setScanning(true);
     try {
       const folderEntries = folders.filter((f) => f.source === "folder");
@@ -119,6 +143,8 @@ export function FolderStep() {
           : Promise.resolve([] as ScanResult[]),
       ]);
 
+      if (activeGenRef.current !== gen) return;
+
       const resultMap = new Map<string, ScanResult>();
       folderEntries.forEach((f, i) => {
         resultMap.set(f.path, folderResults[i]);
@@ -128,50 +154,54 @@ export function FolderStep() {
       });
       setScanResults(resultMap);
 
+      // Check if any source produced tracks
+      const totalTracks = Array.from(resultMap.values()).reduce(
+        (sum, sr) => sum + sr.tracks.length,
+        0
+      );
+      const allSkipped = Array.from(resultMap.values()).flatMap((sr) => sr.skipped);
+
+      if (totalTracks === 0) {
+        const message =
+          allSkipped.length > 0
+            ? `No tracks found. ${allSkipped.length} file(s) skipped:\n${allSkipped
+                .map((s) => `${s.path.split(/[/\\]/).pop()}: ${s.reason}`)
+                .join("\n")}`
+            : "No tracks found in the selected sources.";
+        setError(message);
+        setScanning(false);
+        return;
+      }
+
       // Now match all tracks per folder
       setScanning(false);
       setMatching(true);
       setMatchProgress(null);
 
       for (const folder of folders) {
+        if (activeGenRef.current !== gen) return;
+
         const sr = resultMap.get(folder.path);
         if (!sr || sr.tracks.length === 0) continue;
 
-        // Check cache first
-        let matches: MatchResult[] | null = null;
-        try {
-          matches = await invoke<MatchResult[] | null>("load_match_results", {
-            folderPath: folder.path,
-          });
-        } catch {
-          // Cache miss or error, will re-match
-        }
+        const matches = await invoke<MatchResult[]>("match_tracks", {
+          tracks: sr.tracks,
+          confidence,
+        });
 
-        if (!matches) {
-          matches = await invoke<MatchResult[]>("match_tracks", {
-            tracks: sr.tracks,
-            confidence,
-          });
-          // Save to cache
-          try {
-            await invoke("save_match_results", {
-              folderPath: folder.path,
-              results: matches,
-            });
-          } catch {
-            // Non-fatal: cache write failure
-          }
-        }
+        if (activeGenRef.current !== gen) return;
 
         setMatchResults(folder.path, matches);
       }
 
-      setStep("review");
+      if (activeGenRef.current === gen) setStep("review");
     } catch (e) {
-      setError(String(e));
+      if (activeGenRef.current === gen) setError(String(e));
     } finally {
-      setScanning(false);
-      setMatching(false);
+      if (activeGenRef.current === gen) {
+        setScanning(false);
+        setMatching(false);
+      }
     }
   }
 
@@ -284,7 +314,7 @@ export function FolderStep() {
       )}
 
       {/* Options */}
-      <div className="flex items-center gap-4 bg-zinc-900 rounded-lg px-4 py-3">
+      <div className="flex items-center justify-between bg-zinc-900 rounded-lg px-4 py-3">
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input
             type="checkbox"
@@ -294,11 +324,34 @@ export function FolderStep() {
           />
           Include subfolders
         </label>
+        <button
+          onClick={async () => {
+            try {
+              await invoke("clear_match_cache");
+              setScanResults(new Map());
+              setError(null);
+            } catch (e) {
+              setError(String(e));
+            }
+          }}
+          disabled={scanning || matching}
+          className="text-xs text-zinc-500 hover:text-yellow-400 disabled:opacity-50 transition-colors"
+          title="Clear cached match results so tracks are re-matched from Spotify"
+        >
+          Clear match cache
+        </button>
       </div>
 
       {error && (
-        <div className="bg-red-900/30 border border-red-800 rounded-lg p-3 text-sm text-red-300">
+        <div className="bg-red-900/30 border border-red-800 rounded-lg p-3 text-sm text-red-300 whitespace-pre-line">
           {error}
+        </div>
+      )}
+
+      {/* Scanning indicator */}
+      {scanning && (
+        <div className="bg-zinc-900 rounded-lg px-4 py-3 text-sm text-zinc-300">
+          Scanning files…
         </div>
       )}
 
@@ -307,7 +360,9 @@ export function FolderStep() {
         <div className="bg-zinc-900 rounded-lg px-4 py-3 space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="text-zinc-300 truncate">
-              Matching: {matchProgress.artist} — {matchProgress.title}
+              {matchProgress.current > 0
+                ? `Matching: ${matchProgress.artist} — ${matchProgress.title}`
+                : "Starting…"}
             </span>
             <span className="text-zinc-500 ml-2 shrink-0">
               {matchProgress.current}/{matchProgress.total}
@@ -328,21 +383,27 @@ export function FolderStep() {
       <div className="flex items-center justify-between pt-2">
         <button
           onClick={() => setStep("connect")}
-          className="text-sm text-zinc-400 hover:text-white transition-colors"
+          disabled={scanning || matching}
+          className="text-sm text-zinc-400 hover:text-white disabled:opacity-50 transition-colors"
         >
           ← Back
         </button>
-        <button
-          onClick={handleScanAndMatch}
-          disabled={folders.length === 0 || scanning || matching}
-          className="px-6 py-2 bg-green-600 hover:bg-green-500 disabled:bg-zinc-700 disabled:text-zinc-500 rounded-lg font-medium text-sm transition-colors"
-        >
-          {scanning
-            ? "Scanning..."
-            : matching
-              ? "Matching tracks..."
-              : "Scan & Match"}
-        </button>
+        {scanning || matching ? (
+          <button
+            onClick={handleCancel}
+            className="px-6 py-2 bg-red-600 hover:bg-red-500 rounded-lg font-medium text-sm transition-colors"
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            onClick={handleScanAndMatch}
+            disabled={folders.length === 0}
+            className="px-6 py-2 bg-green-600 hover:bg-green-500 disabled:bg-zinc-700 disabled:text-zinc-500 rounded-lg font-medium text-sm transition-colors"
+          >
+            Scan & Match
+          </button>
+        )}
       </div>
     </div>
   );

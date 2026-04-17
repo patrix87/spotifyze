@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import type {
   FolderEntry,
   MatchResult,
@@ -174,33 +173,3 @@ export const useAppStore = create<AppState>((set) => ({
       }),
     })),
 }));
-
-// Persist match results to cache on changes (debounced)
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-
-function persistMatchCache(folders: FolderEntry[]) {
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    for (const f of folders) {
-      if (f.matchResults) {
-        try {
-          const result = invoke("save_match_results", {
-            folderPath: f.path,
-            results: f.matchResults,
-          });
-          if (result && typeof result.catch === "function") {
-            result.catch(() => {});
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }, 500);
-}
-
-useAppStore.subscribe((state, prev) => {
-  if (state.folders !== prev.folders) {
-    persistMatchCache(state.folders);
-  }
-});

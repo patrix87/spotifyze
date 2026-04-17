@@ -199,9 +199,18 @@ struct M3uEntry {
     file_path: PathBuf,
 }
 
-fn parse_m3u(path: &Path) -> Result<Vec<M3uEntry>, String> {
-    let content = std::fs::read_to_string(path)
+fn read_file_lossy(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path)
         .map_err(|e| format!("Failed to read playlist file: {e}"))?;
+    // Try UTF-8 first; fall back to Latin-1 (ISO 8859-1) for ANSI files
+    match String::from_utf8(bytes.clone()) {
+        Ok(s) => Ok(s),
+        Err(_) => Ok(bytes.iter().map(|&b| b as char).collect()),
+    }
+}
+
+fn parse_m3u(path: &Path) -> Result<Vec<M3uEntry>, String> {
+    let content = read_file_lossy(path)?;
     // Strip UTF-8 BOM if present
     let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -507,6 +516,23 @@ mod tests {
         let (artist, title) = entries[0].extinf_meta.as_ref().unwrap();
         assert_eq!(artist, "Unknown");
         assert_eq!(title, "Just A Song Title");
+    }
+
+    #[test]
+    fn test_parse_m3u_latin1_encoding() {
+        let dir = TempDir::new().unwrap();
+        let m3u = dir.path().join("latin1.m3u");
+        // Latin-1 bytes: "Beyoncé" = [66,101,121,111,110,99,0xe9]
+        let mut content: Vec<u8> = b"#EXTINF:200,Beyonc".to_vec();
+        content.push(0xe9); // é in Latin-1
+        content.extend_from_slice(b" - Halo\ntrack.mp3\n");
+        fs::write(&m3u, &content).unwrap();
+
+        let entries = parse_m3u(&m3u).unwrap();
+        assert_eq!(entries.len(), 1);
+        let (artist, title) = entries[0].extinf_meta.as_ref().unwrap();
+        assert_eq!(artist, "Beyoncé");
+        assert_eq!(title, "Halo");
     }
 
     #[test]

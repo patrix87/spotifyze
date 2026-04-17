@@ -1,12 +1,40 @@
 use crate::auth::{get_valid_token, AuthState};
+use crate::cache::QueryCacheState;
+use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::Emitter;
 use tokio::sync::Mutex;
 
 use crate::scanner::TrackInfo;
 
 const CONFIDENCE_THRESHOLD_DEFAULT: u8 = 80;
+
+/// Shared cancellation flag for match_tracks.
+pub struct MatchCancellation {
+    cancelled: AtomicBool,
+}
+
+impl MatchCancellation {
+    pub fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn reset(&self) {
+        self.cancelled.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchCandidate {
@@ -198,60 +226,64 @@ struct SpotifyExternalUrls {
     spotify: Option<String>,
 }
 
+const MAX_RETRIES: u32 = 10;
+
 async fn search_spotify(
     api_base: &str,
     access_token: &str,
     query: &str,
 ) -> Result<Vec<SpotifyTrack>, String> {
     let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{api_base}/v1/search"))
-        .bearer_auth(access_token)
-        .query(&[("q", query), ("type", "track"), ("limit", "10")])
-        .send()
-        .await
-        .map_err(|e| format!("Search request failed: {e}"))?;
+    let mut last_err = String::new();
 
-    if resp.status().as_u16() == 429 {
-        // Rate limited — wait and retry once
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(2);
-        tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
-
-        let resp2 = client
+    for attempt in 0..=MAX_RETRIES {
+        let resp = client
             .get(format!("{api_base}/v1/search"))
             .bearer_auth(access_token)
             .query(&[("q", query), ("type", "track"), ("limit", "10")])
             .send()
             .await
-            .map_err(|e| format!("Retry search failed: {e}"))?;
+            .map_err(|e| format!("Search request failed: {e}"))?;
 
-        if !resp2.status().is_success() {
-            return Err(format!("Search failed after retry: {}", resp2.status()));
+        if resp.status().as_u16() == 429 {
+            if attempt == MAX_RETRIES {
+                return Err("Search failed: rate limited after max retries".to_string());
+            }
+            let header_secs = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let wait_secs = header_secs + (attempt as u64 + 1);
+            eprintln!(
+                "[matcher] Rate limited (attempt {}/{}), waiting {wait_secs}s",
+                attempt + 1,
+                MAX_RETRIES
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            continue;
         }
 
-        let body: SpotifySearchResponse = resp2
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            last_err = format!("Search failed ({status}): {body}");
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(std::time::Duration::from_secs(attempt as u64 + 1)).await;
+                continue;
+            }
+            return Err(last_err);
+        }
+
+        let body: SpotifySearchResponse = resp
             .json()
             .await
             .map_err(|e| format!("Parse error: {e}"))?;
         return Ok(body.tracks.map(|t| t.items).unwrap_or_default());
     }
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Search failed ({status}): {body}"));
-    }
-
-    let body: SpotifySearchResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {e}"))?;
-    Ok(body.tracks.map(|t| t.items).unwrap_or_default())
+    Err(last_err)
 }
 
 fn build_fallback_query(track: &TrackInfo) -> String {
@@ -265,8 +297,29 @@ async fn match_single_track(
     access_token: &str,
     track: &TrackInfo,
     confidence: u8,
+    cache: Option<&QueryCacheState>,
 ) -> MatchResult {
     let query = build_search_query(track);
+
+    // Check query cache first
+    if let Some(cache) = cache {
+        if let Some(cached_candidates) = cache.get(&query) {
+            let status = if cached_candidates.first().map(|c| c.score).unwrap_or(0) >= confidence {
+                MatchStatus::AutoMatched
+            } else if cached_candidates.is_empty() {
+                MatchStatus::NotFound
+            } else {
+                MatchStatus::NeedsReview
+            };
+            let selected_uri = cached_candidates.first().map(|c| c.spotify_uri.clone());
+            return MatchResult {
+                track: track.clone(),
+                status,
+                candidates: cached_candidates,
+                selected_uri,
+            };
+        }
+    }
 
     let spotify_tracks = match search_spotify(api_base, access_token, &query).await {
         Ok(tracks) => tracks,
@@ -290,6 +343,10 @@ async fn match_single_track(
     };
 
     if spotify_tracks.is_empty() {
+        // Cache the empty result
+        if let Some(cache) = cache {
+            cache.insert(query, vec![]);
+        }
         return MatchResult {
             track: track.clone(),
             status: MatchStatus::NotFound,
@@ -327,6 +384,11 @@ async fn match_single_track(
     candidates.sort_by_key(|c| std::cmp::Reverse(c.score));
     candidates.truncate(5);
 
+    // Cache the candidates for this query
+    if let Some(cache) = cache {
+        cache.insert(query, candidates.clone());
+    }
+
     let status = if candidates.first().map(|c| c.score).unwrap_or(0) >= confidence {
         MatchStatus::AutoMatched
     } else {
@@ -351,32 +413,82 @@ struct MatchProgress {
     title: String,
 }
 
+const CONCURRENT_REQUESTS: usize = 4;
+
 #[tauri::command]
 pub async fn match_tracks(
     app: tauri::AppHandle,
     tracks: Vec<TrackInfo>,
     confidence: Option<u8>,
     state: tauri::State<'_, Arc<Mutex<AuthState>>>,
+    cancel: tauri::State<'_, Arc<MatchCancellation>>,
+    query_cache: tauri::State<'_, QueryCacheState>,
 ) -> Result<Vec<MatchResult>, String> {
+    cancel.reset();
     let access_token = get_valid_token(&state.inner().clone()).await?;
     let confidence = confidence.unwrap_or(CONFIDENCE_THRESHOLD_DEFAULT);
     let total = tracks.len();
+    let completed = Arc::new(AtomicUsize::new(0));
 
-    let mut results = Vec::with_capacity(total);
-    for (i, track) in tracks.iter().enumerate() {
-        let _ = app.emit("match-progress", MatchProgress {
-            current: i + 1,
-            total,
-            artist: track.artist.clone(),
-            title: track.title.clone(),
-        });
-        let result = match_single_track("https://api.spotify.com", &access_token, track, confidence).await;
-        results.push(result);
-        // Small delay to avoid rate limiting
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    // Emit initial progress so the UI shows the loading bar immediately
+    let _ = app.emit("match-progress", MatchProgress {
+        current: 0,
+        total,
+        artist: String::new(),
+        title: String::new(),
+    });
+    let cancel = Arc::clone(cancel.inner());
+    let cache = query_cache.inner().clone();
 
-    Ok(results)
+    let results: Vec<(usize, MatchResult)> = stream::iter(tracks.into_iter().enumerate())
+        .map(|(i, track)| {
+            let token = access_token.clone();
+            let cache = cache.clone();
+            let cancel = Arc::clone(&cancel);
+            let app = app.clone();
+            let completed = Arc::clone(&completed);
+            async move {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+                let result = match_single_track(
+                    "https://api.spotify.com",
+                    &token,
+                    &track,
+                    confidence,
+                    Some(&cache),
+                )
+                .await;
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                let _ = app.emit(
+                    "match-progress",
+                    MatchProgress {
+                        current: done,
+                        total,
+                        artist: track.artist.clone(),
+                        title: track.title.clone(),
+                    },
+                );
+                Some((i, result))
+            }
+        })
+        .buffer_unordered(CONCURRENT_REQUESTS)
+        .filter_map(|x| async { x })
+        .collect()
+        .await;
+
+    let mut ordered = results;
+    ordered.sort_by_key(|(i, _)| *i);
+
+    Ok(ordered.into_iter().map(|(_, r)| r).collect())
+}
+
+#[tauri::command]
+pub async fn cancel_matching(
+    cancel: tauri::State<'_, Arc<MatchCancellation>>,
+) -> Result<(), String> {
+    cancel.cancel();
+    Ok(())
 }
 
 #[tauri::command]
@@ -763,6 +875,7 @@ mod tests {
             .match_query(mockito::Matcher::Any)
             .with_status(500)
             .with_body("Internal Server Error")
+            .expect_at_least(2)
             .create_async()
             .await;
 
@@ -780,12 +893,13 @@ mod tests {
             .match_query(mockito::Matcher::Any)
             .with_status(429)
             .with_header("retry-after", "0")
+            .expect_at_least(2)
             .create_async()
             .await;
 
         let result = search_spotify(&server.url(), "fake_token", "test").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("after retry"));
+        assert!(result.unwrap_err().contains("rate limited"));
     }
 
     #[tokio::test]
@@ -829,7 +943,7 @@ mod tests {
             .await;
 
         let track = make_track("Pink Floyd", "Comfortably Numb", Some("The Wall"));
-        let result = match_single_track(&server.url(), "fake_token", &track, 70).await;
+        let result = match_single_track(&server.url(), "fake_token", &track, 70, None).await;
         assert!(matches!(result.status, MatchStatus::AutoMatched));
         assert!(!result.candidates.is_empty());
         assert!(result.selected_uri.is_some());
@@ -855,7 +969,7 @@ mod tests {
             .await;
 
         let track = make_track("Pink Floyd", "Comfortably Numb", Some("The Wall"));
-        let result = match_single_track(&server.url(), "fake_token", &track, 95).await;
+        let result = match_single_track(&server.url(), "fake_token", &track, 95, None).await;
         assert!(matches!(result.status, MatchStatus::NeedsReview));
         assert!(!result.candidates.is_empty());
     }
@@ -873,7 +987,7 @@ mod tests {
             .await;
 
         let track = make_track("Unknown Artist", "Unknown Song", None);
-        let result = match_single_track(&server.url(), "fake_token", &track, 80).await;
+        let result = match_single_track(&server.url(), "fake_token", &track, 80, None).await;
         assert!(matches!(result.status, MatchStatus::NotFound));
         assert!(result.candidates.is_empty());
     }
@@ -909,7 +1023,7 @@ mod tests {
             .await;
 
         let track = make_track("Artist", "Song", None);
-        let result = match_single_track(&server.url(), "fake_token", &track, 70).await;
+        let result = match_single_track(&server.url(), "fake_token", &track, 70, None).await;
         assert!(!matches!(result.status, MatchStatus::NotFound));
         assert!(!result.candidates.is_empty());
     }
@@ -935,7 +1049,7 @@ mod tests {
             .await;
 
         let track = make_track("Artist", "Song", Some("Album"));
-        let result = match_single_track(&server.url(), "fake_token", &track, 50).await;
+        let result = match_single_track(&server.url(), "fake_token", &track, 50, None).await;
         // Should be truncated to 5 candidates
         assert!(result.candidates.len() <= 5);
         // Should be sorted by score descending
@@ -956,7 +1070,7 @@ mod tests {
             .await;
 
         let track = make_track("Artist", "Song", None);
-        let result = match_single_track(&server.url(), "fake_token", &track, 80).await;
+        let result = match_single_track(&server.url(), "fake_token", &track, 80, None).await;
         assert!(matches!(result.status, MatchStatus::NotFound));
         assert!(result.candidates.is_empty());
     }
