@@ -232,5 +232,158 @@ describe("useAppStore", () => {
       expect(mr.selected_uri).toBeNull();
       expect(mr.status).toBe("AutoMatched");
     });
+
+    it("does nothing for non-matching folder path", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().setMatchResults("/music/rock", [
+        {
+          track: {
+            path: "/a.mp3",
+            file_name: "a.mp3",
+            artist: "A",
+            title: "Song",
+            album: null,
+            album_artist: null,
+            track_number: null,
+            year: null,
+          },
+          status: "AutoMatched",
+          candidates: [],
+          selected_uri: "uri:1",
+        },
+      ]);
+      useAppStore.getState().updateSelectedUri("/music/jazz", "/a.mp3", "uri:2");
+      const mr = useAppStore.getState().folders[0].matchResults![0];
+      expect(mr.selected_uri).toBe("uri:1");
+    });
+
+    it("does nothing for folder without matchResults", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().updateSelectedUri("/music/rock", "/a.mp3", "uri:2");
+      expect(useAppStore.getState().folders[0].matchResults).toBeNull();
+    });
+
+    it("does nothing for non-matching track path", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().setMatchResults("/music/rock", [
+        {
+          track: {
+            path: "/a.mp3",
+            file_name: "a.mp3",
+            artist: "A",
+            title: "Song",
+            album: null,
+            album_artist: null,
+            track_number: null,
+            year: null,
+          },
+          status: "AutoMatched",
+          candidates: [],
+          selected_uri: "uri:1",
+        },
+      ]);
+      useAppStore.getState().updateSelectedUri("/music/rock", "/b.mp3", "uri:2");
+      const mr = useAppStore.getState().folders[0].matchResults![0];
+      expect(mr.selected_uri).toBe("uri:1");
+    });
+  });
+
+  describe("updateCandidates", () => {
+    it("replaces candidates and clears selected_uri", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().setMatchResults("/music/rock", [
+        {
+          track: {
+            path: "/a.mp3",
+            file_name: "a.mp3",
+            artist: "A",
+            title: "Song",
+            album: null,
+            album_artist: null,
+            track_number: null,
+            year: null,
+          },
+          status: "AutoMatched",
+          candidates: [],
+          selected_uri: "uri:1",
+        },
+      ]);
+      const newCandidates = [
+        {
+          spotify_uri: "uri:new",
+          name: "New Song",
+          artist: "A",
+          album: "Album",
+          album_type: "album" as const,
+          release_year: "2024",
+          popularity: 80,
+          score: 90,
+          external_url: null,
+          preview_url: null,
+        },
+      ];
+      useAppStore
+        .getState()
+        .updateCandidates("/music/rock", "/a.mp3", newCandidates);
+      const mr = useAppStore.getState().folders[0].matchResults![0];
+      expect(mr.candidates).toEqual(newCandidates);
+      expect(mr.selected_uri).toBeNull();
+      expect(mr.status).toBe("NeedsReview");
+    });
+
+    it("sets status to NotFound when candidates are empty", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().setMatchResults("/music/rock", [
+        {
+          track: {
+            path: "/a.mp3",
+            file_name: "a.mp3",
+            artist: "A",
+            title: "Song",
+            album: null,
+            album_artist: null,
+            track_number: null,
+            year: null,
+          },
+          status: "AutoMatched",
+          candidates: [],
+          selected_uri: "uri:1",
+        },
+      ]);
+      useAppStore.getState().updateCandidates("/music/rock", "/a.mp3", []);
+      const mr = useAppStore.getState().folders[0].matchResults![0];
+      expect(mr.status).toBe("NotFound");
+      expect(mr.selected_uri).toBeNull();
+    });
+
+    it("does nothing for non-matching folder", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().setMatchResults("/music/rock", [
+        {
+          track: {
+            path: "/a.mp3",
+            file_name: "a.mp3",
+            artist: "A",
+            title: "Song",
+            album: null,
+            album_artist: null,
+            track_number: null,
+            year: null,
+          },
+          status: "AutoMatched",
+          candidates: [],
+          selected_uri: "uri:1",
+        },
+      ]);
+      useAppStore.getState().updateCandidates("/music/jazz", "/a.mp3", []);
+      const mr = useAppStore.getState().folders[0].matchResults![0];
+      expect(mr.selected_uri).toBe("uri:1");
+    });
+
+    it("does nothing for folder without matchResults", () => {
+      useAppStore.getState().addFolder("/music/rock");
+      useAppStore.getState().updateCandidates("/music/rock", "/a.mp3", []);
+      expect(useAppStore.getState().folders[0].matchResults).toBeNull();
+    });
   });
 });

@@ -64,7 +64,7 @@ export function FolderStep() {
             addFolder(path);
           }
         }
-      } else if (event.payload.type === "cancelled") {
+      } else {
         setDragging(false);
       }
     });

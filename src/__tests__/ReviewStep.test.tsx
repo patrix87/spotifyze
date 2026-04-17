@@ -200,4 +200,332 @@ describe("ReviewStep", () => {
     expect(screen.getByText(/Song \(Remix\)/)).toBeInTheDocument();
     expect(screen.getByText("Skip this track")).toBeInTheDocument();
   });
+
+  it("selects a candidate when clicked", async () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist", "Song", "/a.mp3"),
+        status: "NeedsReview",
+        candidates: [
+          mockCandidate("Song", "Artist", "uri:1", 90),
+          mockCandidate("Song (Live)", "Artist", "uri:2", 70),
+        ],
+        selected_uri: "uri:1",
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    // Expand track
+    await user.click(screen.getByText("2 matches"));
+    // Click the second candidate (text is "Artist — Song (Live)" in a <p>)
+    await user.click(screen.getByText(/Song \(Live\)/));
+
+    const mr = useAppStore.getState().folders[0].matchResults![0];
+    expect(mr.selected_uri).toBe("uri:2");
+  });
+
+  it("skips a track when skip button clicked", async () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist", "Song", "/a.mp3"),
+        status: "NeedsReview",
+        candidates: [mockCandidate("Song", "Artist", "uri:1", 90)],
+        selected_uri: "uri:1",
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    // Expand track
+    await user.click(screen.getByText("Artist"));
+    // Click skip
+    await user.click(screen.getByText("Skip this track"));
+
+    const mr = useAppStore.getState().folders[0].matchResults![0];
+    expect(mr.selected_uri).toBeNull();
+  });
+
+  it("filters by NotFound status", async () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist1", "Found Song", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Found Song", "Artist1", "uri:1", 95)],
+        selected_uri: "uri:1",
+      },
+      {
+        track: mockTrack("Artist2", "Lost Song", "/b.mp3"),
+        status: "NotFound",
+        candidates: [],
+        selected_uri: null,
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    // Click the Missing filter button
+    await user.click(screen.getByText(/Missing \(1\)/));
+
+    expect(screen.getByText("Lost Song")).toBeInTheDocument();
+    expect(screen.queryByText("Found Song")).not.toBeInTheDocument();
+  });
+
+  it("filters by AutoMatched status", async () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist1", "Good", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Good", "Artist1", "uri:1", 95)],
+        selected_uri: "uri:1",
+      },
+      {
+        track: mockTrack("Artist2", "Bad", "/b.mp3"),
+        status: "NotFound",
+        candidates: [],
+        selected_uri: null,
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    await user.click(screen.getByText(/Matched/));
+
+    expect(screen.getByText("Good")).toBeInTheDocument();
+    expect(screen.queryByText("Bad")).not.toBeInTheDocument();
+  });
+
+  it("sorts alphabetically when A-Z selected", async () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Zebra", "Zzz", "/z.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Zzz", "Zebra", "uri:z", 90)],
+        selected_uri: "uri:z",
+      },
+      {
+        track: mockTrack("Apple", "Aaa", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Aaa", "Apple", "uri:a", 90)],
+        selected_uri: "uri:a",
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    await user.click(screen.getByText("A–Z"));
+
+    // Get track title rows (p.text-sm.truncate has "Artist — Title" text)
+    const trackTitlePs = document.querySelectorAll("p.text-sm.truncate");
+    const texts = Array.from(trackTitlePs).map((el) => el.textContent);
+    // "Apple — Aaa" should come before "Zebra — Zzz"
+    expect(texts[0]).toContain("Apple");
+    expect(texts[1]).toContain("Zebra");
+  });
+
+  it("performs manual search on expanded track", async () => {
+    mockInvoke.mockResolvedValue([
+      mockCandidate("New Result", "New Artist", "uri:new", 85),
+    ]);
+
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist", "Song", "/a.mp3"),
+        status: "NotFound",
+        candidates: [],
+        selected_uri: null,
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    // Expand track
+    await user.click(screen.getByText("Artist"));
+
+    // Type in search box and submit
+    const searchInput = screen.getByPlaceholderText("Search Spotify...");
+    await user.clear(searchInput);
+    await user.type(searchInput, "Artist Song");
+    await user.click(screen.getByText("Search"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("search_manual", {
+        query: "Artist Song",
+      });
+    });
+  });
+
+  it("shows creating state while playlists are being created", async () => {
+    // Make create_playlist never resolve
+    mockInvoke.mockImplementation(() => new Promise(() => {}));
+
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist", "Song", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Song", "Artist", "uri:1", 95)],
+        selected_uri: "uri:1",
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    await user.click(screen.getByText("Create Playlist (1 tracks)"));
+    expect(screen.getByText("Creating...")).toBeInTheDocument();
+  });
+
+  it("shows error when playlist creation fails", async () => {
+    mockInvoke.mockRejectedValue("API error: rate limited");
+
+    setupFolderWithMatches([
+      {
+        track: mockTrack("Artist", "Song", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Song", "Artist", "uri:1", 95)],
+        selected_uri: "uri:1",
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    await user.click(screen.getByText("Create Playlist (1 tracks)"));
+
+    await waitFor(() => {
+      expect(screen.getByText("API error: rate limited")).toBeInTheDocument();
+    });
+  });
+
+  it("renders multiple folders as separate sections", () => {
+    useAppStore.setState({
+      step: "review",
+      folders: [
+        {
+          path: "/music/rock",
+          name: "Rock",
+          source: "folder",
+          scanResult: null,
+          matchResults: [
+            {
+              track: mockTrack("A", "Song1", "/a.mp3"),
+              status: "AutoMatched",
+              candidates: [mockCandidate("Song1", "A", "uri:1", 95)],
+              selected_uri: "uri:1",
+            },
+          ],
+          playlistResult: null,
+        },
+        {
+          path: "/music/jazz",
+          name: "Jazz",
+          source: "folder",
+          scanResult: null,
+          matchResults: [
+            {
+              track: mockTrack("B", "Song2", "/b.mp3"),
+              status: "AutoMatched",
+              candidates: [mockCandidate("Song2", "B", "uri:2", 90)],
+              selected_uri: "uri:2",
+            },
+          ],
+          playlistResult: null,
+        },
+      ],
+    });
+
+    render(<ReviewStep />);
+    expect(screen.getByDisplayValue("Rock")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Jazz")).toBeInTheDocument();
+    expect(screen.getByText(/2 of 2 tracks matched/)).toBeInTheDocument();
+  });
+
+  it("shows needs review count in stats", () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("A", "Song1", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Song1", "A", "uri:1", 95)],
+        selected_uri: "uri:1",
+      },
+      {
+        track: mockTrack("B", "Song2", "/b.mp3"),
+        status: "NeedsReview",
+        candidates: [mockCandidate("Song2", "B", "uri:2", 60)],
+        selected_uri: "uri:2",
+      },
+    ]);
+
+    render(<ReviewStep />);
+    expect(screen.getByText(/1 need review/)).toBeInTheDocument();
+  });
+
+  it("allows editing playlist name in review", async () => {
+    setupFolderWithMatches([
+      {
+        track: mockTrack("A", "Song", "/a.mp3"),
+        status: "AutoMatched",
+        candidates: [mockCandidate("Song", "A", "uri:1", 95)],
+        selected_uri: "uri:1",
+      },
+    ]);
+
+    const user = userEvent.setup();
+    render(<ReviewStep />);
+
+    const nameInput = screen.getByDisplayValue("Rock");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Classic Rock");
+
+    expect(useAppStore.getState().folders[0].name).toBe("Classic Rock");
+  });
+
+  it("uses plural Playlists text for multiple folders", () => {
+    useAppStore.setState({
+      step: "review",
+      folders: [
+        {
+          path: "/music/rock",
+          name: "Rock",
+          source: "folder",
+          scanResult: null,
+          matchResults: [
+            {
+              track: mockTrack("A", "Song1", "/a.mp3"),
+              status: "AutoMatched",
+              candidates: [mockCandidate("Song1", "A", "uri:1", 95)],
+              selected_uri: "uri:1",
+            },
+          ],
+          playlistResult: null,
+        },
+        {
+          path: "/music/jazz",
+          name: "Jazz",
+          source: "folder",
+          scanResult: null,
+          matchResults: [
+            {
+              track: mockTrack("B", "Song2", "/b.mp3"),
+              status: "AutoMatched",
+              candidates: [mockCandidate("Song2", "B", "uri:2", 90)],
+              selected_uri: "uri:2",
+            },
+          ],
+          playlistResult: null,
+        },
+      ],
+    });
+
+    render(<ReviewStep />);
+    expect(
+      screen.getByText("Create Playlists (2 tracks)")
+    ).toBeInTheDocument();
+  });
 });

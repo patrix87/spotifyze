@@ -114,16 +114,163 @@ describe("ConnectStep", () => {
   });
 
   it("shows error on login failure", async () => {
+    // get_client_id returns a saved id, check_auth returns null (not logged in)
+    mockInvoke
+      .mockResolvedValueOnce("saved-id") // get_client_id
+      .mockResolvedValueOnce(null) // check_auth
+      .mockRejectedValueOnce("Auth failed"); // login
+
+    const user = userEvent.setup();
+    render(<ConnectStep />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Connect with Spotify")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Connect with Spotify"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Auth failed")).toBeInTheDocument();
+    });
+  });
+
+  it("logs in successfully and shows profile", async () => {
+    const profile = {
+      id: "user1",
+      display_name: "Logged In User",
+      images: [{ url: "https://example.com/pic.jpg" }],
+    };
+    mockInvoke
+      .mockResolvedValueOnce("saved-id") // get_client_id
+      .mockResolvedValueOnce(null) // check_auth
+      .mockResolvedValueOnce(profile); // login
+
+    const user = userEvent.setup();
+    render(<ConnectStep />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Connect with Spotify")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Connect with Spotify"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Logged In User")).toBeInTheDocument();
+    });
+    expect(screen.getByAltText("Profile")).toHaveAttribute(
+      "src",
+      "https://example.com/pic.jpg"
+    );
+  });
+
+  it("logs out and returns to login view", async () => {
+    const profile = {
+      id: "user1",
+      display_name: "Test User",
+      images: [],
+    };
+    mockInvoke
+      .mockResolvedValueOnce("saved-id") // get_client_id
+      .mockResolvedValueOnce(profile) // check_auth
+      .mockResolvedValueOnce(undefined); // logout
+
+    const user = userEvent.setup();
+    render(<ConnectStep />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Test User")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Disconnect"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Connect with Spotify")).toBeInTheDocument();
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("logout");
+  });
+
+  it("navigates to folders step on Next click", async () => {
+    const profile = {
+      id: "user1",
+      display_name: "Test User",
+      images: [],
+    };
+    mockInvoke
+      .mockResolvedValueOnce("saved-id") // get_client_id
+      .mockResolvedValueOnce(profile); // check_auth
+
+    const user = userEvent.setup();
+    render(<ConnectStep />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Next — Add Music")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Next — Add Music"));
+
+    expect(useAppStore.getState().step).toBe("folders");
+  });
+
+  it("shows Change Client ID button and resets to setup", async () => {
+    mockInvoke
+      .mockResolvedValueOnce("saved-id") // get_client_id
+      .mockResolvedValueOnce(null); // check_auth
+
+    const user = userEvent.setup();
+    render(<ConnectStep />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Change Client ID")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Change Client ID"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Setup — Spotify Client ID")
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows error when saving client ID fails", async () => {
     mockInvoke
       .mockResolvedValueOnce(null) // get_client_id
-      .mockResolvedValueOnce(null) // get_client_id resolves to null
-      .mockRejectedValueOnce("Auth failed"); // set_client_id or login
+      .mockRejectedValueOnce("Save failed"); // set_client_id
+
+    const user = userEvent.setup();
     render(<ConnectStep />);
-    // Wait for initial load
+
     await waitFor(() => {
       expect(
         screen.getByPlaceholderText("Paste your Client ID here")
       ).toBeInTheDocument();
+    });
+
+    await user.type(
+      screen.getByPlaceholderText("Paste your Client ID here"),
+      "bad-id"
+    );
+    await user.click(screen.getByText("Save Client ID"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Save failed")).toBeInTheDocument();
+    });
+  });
+
+  it("shows user ID when display_name is missing", async () => {
+    const profile = {
+      id: "user123",
+      display_name: null,
+      images: [],
+    };
+    mockInvoke
+      .mockResolvedValueOnce("saved-id") // get_client_id
+      .mockResolvedValueOnce(profile); // check_auth
+
+    render(<ConnectStep />);
+
+    await waitFor(() => {
+      expect(screen.getByText("user123")).toBeInTheDocument();
     });
   });
 });

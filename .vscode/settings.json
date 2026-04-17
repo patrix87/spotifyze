@@ -1,0 +1,4 @@
+{
+  "chat.tools.terminal.outputLocation":"terminal",
+  "chat.agent.thinking.terminalTools": false
+}

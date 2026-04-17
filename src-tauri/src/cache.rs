@@ -55,10 +55,10 @@ pub fn load_match_results(folder_path: String) -> Result<Option<Vec<MatchResult>
 
 #[tauri::command]
 pub fn clear_match_cache() -> Result<(), String> {
-    if let Some(path) = cache_path() {
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| format!("Failed to clear cache: {e}"))?;
-        }
+    if let Some(path) = cache_path()
+        && path.exists()
+    {
+        fs::remove_file(&path).map_err(|e| format!("Failed to clear cache: {e}"))?;
     }
     Ok(())
 }

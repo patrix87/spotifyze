@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FolderStep } from "../components/FolderStep";
 import { useAppStore } from "../lib/store";
+import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/plugin-dialog");
@@ -14,6 +15,8 @@ vi.mock("@tauri-apps/api/window", () => ({
     onDragDropEvent: vi.fn(() => Promise.resolve(() => {})),
   })),
 }));
+
+const mockInvoke = vi.mocked(invoke);
 
 describe("FolderStep", () => {
   beforeEach(() => {
@@ -134,5 +137,213 @@ describe("FolderStep", () => {
     await user.clear(input);
     await user.type(input, "Classic Rock");
     expect(useAppStore.getState().folders[0].name).toBe("Classic Rock");
+  });
+
+  it("displays playlist entries with playlist emoji", () => {
+    useAppStore.getState().addPlaylist("/home/user/chill.m3u");
+    render(<FolderStep />);
+    expect(screen.getByDisplayValue("chill")).toBeInTheDocument();
+    expect(screen.getByText("🎵")).toBeInTheDocument();
+  });
+
+  it("displays folder entries with folder emoji", () => {
+    useAppStore.getState().addFolder("/home/user/Music/Rock");
+    render(<FolderStep />);
+    expect(screen.getByText("📁")).toBeInTheDocument();
+  });
+
+  it("toggles recursive checkbox", async () => {
+    const user = userEvent.setup();
+    render(<FolderStep />);
+    const checkbox = screen.getByLabelText("Include subfolders");
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    expect(useAppStore.getState().recursive).toBe(true);
+  });
+
+  it("scans folders and matches tracks on Scan & Match", async () => {
+    const scanResult = {
+      tracks: [
+        {
+          path: "/a.mp3",
+          file_name: "a.mp3",
+          artist: "A",
+          title: "Song",
+          album: null,
+          album_artist: null,
+          track_number: null,
+          year: null,
+        },
+      ],
+      skipped: [],
+    };
+    const matchResults = [
+      {
+        track: scanResult.tracks[0],
+        status: "AutoMatched",
+        candidates: [],
+        selected_uri: "uri:1",
+      },
+    ];
+
+    mockInvoke
+      .mockResolvedValueOnce([scanResult]) // scan_folders
+      .mockResolvedValueOnce(null) // load_match_results (cache miss)
+      .mockResolvedValueOnce(matchResults) // match_tracks
+      .mockResolvedValueOnce(undefined); // save_match_results
+
+    useAppStore.getState().addFolder("/home/user/Music/Rock");
+    const user = userEvent.setup();
+    render(<FolderStep />);
+
+    await user.click(screen.getByText("Scan & Match"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("scan_folders", {
+        paths: ["/home/user/Music/Rock"],
+        recursive: false,
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().step).toBe("review");
+    });
+  });
+
+  it("uses cached match results when available", async () => {
+    const scanResult = {
+      tracks: [
+        {
+          path: "/a.mp3",
+          file_name: "a.mp3",
+          artist: "A",
+          title: "Song",
+          album: null,
+          album_artist: null,
+          track_number: null,
+          year: null,
+        },
+      ],
+      skipped: [],
+    };
+    const cachedResults = [
+      {
+        track: scanResult.tracks[0],
+        status: "AutoMatched",
+        candidates: [],
+        selected_uri: "uri:1",
+      },
+    ];
+
+    mockInvoke
+      .mockResolvedValueOnce([scanResult]) // scan_folders
+      .mockResolvedValueOnce(cachedResults); // load_match_results (cache hit)
+
+    useAppStore.getState().addFolder("/home/user/Music/Rock");
+    const user = userEvent.setup();
+    render(<FolderStep />);
+
+    await user.click(screen.getByText("Scan & Match"));
+
+    await waitFor(() => {
+      expect(useAppStore.getState().step).toBe("review");
+    });
+
+    // match_tracks should NOT have been called
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "match_tracks",
+      expect.anything()
+    );
+  });
+
+  it("shows error when scan fails", async () => {
+    mockInvoke.mockRejectedValueOnce("Scan failed: permission denied");
+
+    useAppStore.getState().addFolder("/home/user/Music/Rock");
+    const user = userEvent.setup();
+    render(<FolderStep />);
+
+    await user.click(screen.getByText("Scan & Match"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Scan failed: permission denied")
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("scans playlists separately from folders", async () => {
+    const folderScan = {
+      tracks: [
+        {
+          path: "/a.mp3",
+          file_name: "a.mp3",
+          artist: "A",
+          title: "Song",
+          album: null,
+          album_artist: null,
+          track_number: null,
+          year: null,
+        },
+      ],
+      skipped: [],
+    };
+    const playlistScan = {
+      tracks: [
+        {
+          path: "/b.mp3",
+          file_name: "b.mp3",
+          artist: "B",
+          title: "Track",
+          album: null,
+          album_artist: null,
+          track_number: null,
+          year: null,
+        },
+      ],
+      skipped: [],
+    };
+
+    mockInvoke
+      .mockResolvedValueOnce([folderScan]) // scan_folders
+      .mockResolvedValueOnce([playlistScan]) // scan_playlists
+      .mockResolvedValueOnce(null) // load_match_results folder
+      .mockResolvedValueOnce([]) // match_tracks folder
+      .mockResolvedValueOnce(undefined) // save_match_results folder
+      .mockResolvedValueOnce(null) // load_match_results playlist
+      .mockResolvedValueOnce([]) // match_tracks playlist
+      .mockResolvedValueOnce(undefined); // save_match_results playlist
+
+    useAppStore.getState().addFolder("/home/user/Music/Rock");
+    useAppStore.getState().addPlaylist("/home/user/chill.m3u");
+    const user = userEvent.setup();
+    render(<FolderStep />);
+
+    await user.click(screen.getByText("Scan & Match"));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("scan_folders", {
+        paths: ["/home/user/Music/Rock"],
+        recursive: false,
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("scan_playlists", {
+        paths: ["/home/user/chill.m3u"],
+      });
+    });
+  });
+
+  it("adds folder via dialog returning single string", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const mockOpen = vi.mocked(open);
+    mockOpen.mockResolvedValue("/home/user/Music/Pop" as any);
+
+    const user = userEvent.setup();
+    render(<FolderStep />);
+    await user.click(screen.getByText("+ Add Folder"));
+
+    await waitFor(() => {
+      expect(useAppStore.getState().folders).toHaveLength(1);
+      expect(useAppStore.getState().folders[0].path).toBe("/home/user/Music/Pop");
+    });
   });
 });

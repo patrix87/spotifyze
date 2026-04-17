@@ -142,12 +142,10 @@ fn build_search_query(track: &TrackInfo) -> String {
 }
 
 fn sanitize_query(s: &str) -> String {
-    s.replace('"', "")
-        .replace('\'', "")
+    s.replace(['"', '\''], "")
         .replace('&', "and")
         .replace(['[', ']', '(', ')', '{', '}'], "")
-        .replace('!', "")
-        .replace('?', "")
+        .replace(['!', '?'], "")
         .trim()
         .to_string()
 }
@@ -284,10 +282,7 @@ async fn match_single_track(
     // If field-filtered query returned nothing, try a plain text fallback
     let spotify_tracks = if spotify_tracks.is_empty() {
         let fallback = build_fallback_query(track);
-        match search_spotify(access_token, &fallback).await {
-            Ok(tracks) => tracks,
-            Err(_) => vec![]
-        }
+        search_spotify(access_token, &fallback).await.unwrap_or_default()
     } else {
         spotify_tracks
     };
@@ -585,5 +580,117 @@ mod tests {
         assert_eq!(normalize("Song [Deluxe]"), "song deluxe");
         assert_eq!(normalize("  HELLO   WORLD  "), "hello world");
         assert_eq!(normalize("ft. Someone"), "someone");
+    }
+
+    #[test]
+    fn test_clean_title_for_search_strips_track_number() {
+        assert_eq!(clean_title_for_search("04 - Comfortably Numb"), "Comfortably Numb");
+        assert_eq!(clean_title_for_search("15 Song Title"), "Song Title");
+        assert_eq!(clean_title_for_search("1. Intro"), "Intro");
+    }
+
+    #[test]
+    fn test_clean_title_for_search_strips_feat() {
+        assert_eq!(clean_title_for_search("Song (feat. Artist)"), "Song");
+        assert_eq!(clean_title_for_search("Song (ft. Artist)"), "Song");
+        assert_eq!(clean_title_for_search("Song [feat. Artist]"), "Song");
+        assert_eq!(clean_title_for_search("Song featuring Artist"), "Song");
+        assert_eq!(clean_title_for_search("Song ft. Artist"), "Song");
+    }
+
+    #[test]
+    fn test_clean_title_for_search_no_number() {
+        assert_eq!(clean_title_for_search("Plain Title"), "Plain Title");
+    }
+
+    #[test]
+    fn test_clean_artist_for_search() {
+        assert_eq!(clean_artist_for_search("Eminem Ft. Rihanna"), "Eminem");
+        assert_eq!(clean_artist_for_search("Artist feat. Other"), "Artist");
+        assert_eq!(clean_artist_for_search("Artist featuring Other"), "Artist");
+        assert_eq!(clean_artist_for_search("Solo Artist"), "Solo Artist");
+    }
+
+    #[test]
+    fn test_build_fallback_query() {
+        let track = make_track("Pink Floyd", "Money", None);
+        let query = build_fallback_query(&track);
+        assert_eq!(query, "Pink Floyd Money");
+    }
+
+    #[test]
+    fn test_build_fallback_query_special_chars() {
+        let track = make_track("AC/DC", "It's a Long Way", None);
+        let query = build_fallback_query(&track);
+        assert_eq!(query, "AC/DC Its a Long Way");
+    }
+
+    #[test]
+    fn test_score_no_album_info() {
+        let track = make_track("Artist", "Song", None);
+        let candidate = make_spotify_track("Song", "Artist", "Some Album", "album", 50);
+        let score = score_candidate(&track, &candidate);
+        // Should still score well since artist + title match
+        assert!(score >= 70, "No album info should still score well, got {score}");
+    }
+
+    #[test]
+    fn test_score_single_vs_album() {
+        let track = make_track("Artist", "Song", Some("Album"));
+        let single = make_spotify_track("Song", "Artist", "Album", "single", 50);
+        let album = make_spotify_track("Song", "Artist", "Album", "album", 50);
+        let single_score = score_candidate(&track, &single);
+        let album_score = score_candidate(&track, &album);
+        assert!(album_score > single_score, "Album ({album_score}) should beat single ({single_score})");
+    }
+
+    #[test]
+    fn test_score_popularity_tiebreaker() {
+        let track = make_track("Artist", "Song", Some("Album"));
+        let popular = make_spotify_track("Song", "Artist", "Album", "album", 100);
+        let unpopular = make_spotify_track("Song", "Artist", "Album", "album", 0);
+        let popular_score = score_candidate(&track, &popular);
+        let unpopular_score = score_candidate(&track, &unpopular);
+        assert!(popular_score > unpopular_score, "Popular ({popular_score}) should beat unpopular ({unpopular_score})");
+    }
+
+    #[test]
+    fn test_score_live_penalty_when_local_not_live() {
+        let track = make_track("Artist", "Song", None);
+        let normal = make_spotify_track("Song", "Artist", "Album", "album", 50);
+        let live = make_spotify_track("Song (Live)", "Artist", "Album", "album", 50);
+        let normal_score = score_candidate(&track, &normal);
+        let live_score = score_candidate(&track, &live);
+        assert!(normal_score > live_score, "Normal ({normal_score}) should beat live ({live_score})");
+    }
+
+    #[test]
+    fn test_score_live_no_penalty_when_local_is_live() {
+        let track = make_track("Artist", "Song (Live)", None);
+        let live = make_spotify_track("Song (Live)", "Artist", "Album", "album", 50);
+        let score = score_candidate(&track, &live);
+        // Should not be penalized since local also has "live"
+        assert!(score >= 80, "Both live should score high, got {score}");
+    }
+
+    #[test]
+    fn test_score_completely_different() {
+        let track = make_track("Pink Floyd", "Comfortably Numb", Some("The Wall"));
+        let candidate = make_spotify_track("Baby Shark", "Pinkfong", "Baby Shark", "single", 95);
+        let score = score_candidate(&track, &candidate);
+        assert!(score < 65, "Completely different should score low, got {score}");
+    }
+
+    #[test]
+    fn test_build_search_query_empty_album() {
+        let track = make_track("Artist", "Title", Some(""));
+        let query = build_search_query(&track);
+        // Empty album should not add album field
+        assert_eq!(query, r#"artist:"Artist" track:"Title""#);
+    }
+
+    #[test]
+    fn test_sanitize_query_curly_braces() {
+        assert_eq!(sanitize_query("{Special} Edition"), "Special Edition");
     }
 }
