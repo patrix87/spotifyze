@@ -302,23 +302,23 @@ async fn match_single_track(
     let query = build_search_query(track);
 
     // Check query cache first
-    if let Some(cache) = cache {
-        if let Some(cached_candidates) = cache.get(&query) {
-            let status = if cached_candidates.first().map(|c| c.score).unwrap_or(0) >= confidence {
-                MatchStatus::AutoMatched
-            } else if cached_candidates.is_empty() {
-                MatchStatus::NotFound
-            } else {
-                MatchStatus::NeedsReview
-            };
-            let selected_uri = cached_candidates.first().map(|c| c.spotify_uri.clone());
-            return MatchResult {
-                track: track.clone(),
-                status,
-                candidates: cached_candidates,
-                selected_uri,
-            };
-        }
+    if let Some(cache) = cache
+        && let Some(cached_candidates) = cache.get(&query)
+    {
+        let status = if cached_candidates.first().map(|c| c.score).unwrap_or(0) >= confidence {
+            MatchStatus::AutoMatched
+        } else if cached_candidates.is_empty() {
+            MatchStatus::NotFound
+        } else {
+            MatchStatus::NeedsReview
+        };
+        let selected_uri = cached_candidates.first().map(|c| c.spotify_uri.clone());
+        return MatchResult {
+            track: track.clone(),
+            status,
+            candidates: cached_candidates,
+            selected_uri,
+        };
     }
 
     let spotify_tracks = match search_spotify(api_base, access_token, &query).await {

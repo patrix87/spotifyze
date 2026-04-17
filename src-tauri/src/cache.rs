@@ -80,10 +80,10 @@ impl QueryCacheState {
         if let Ok(mut cache) = self.inner.lock() {
             cache.queries.clear();
         }
-        if let Some(path) = cache_path() {
-            if path.exists() {
-                let _ = fs::remove_file(&path);
-            }
+        if let Some(path) = cache_path()
+            && path.exists()
+        {
+            let _ = fs::remove_file(&path);
         }
         // Also remove legacy folder-based cache if present
         if let Some(dir) = cache_dir() {
