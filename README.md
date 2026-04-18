@@ -1,5 +1,11 @@
 # Spotifyze
 
+[![CI](https://github.com/patrix87/spotifyze/actions/workflows/ci.yml/badge.svg)](https://github.com/patrix87/spotifyze/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/patrix87/spotifyze)](https://github.com/patrix87/spotifyze/releases/latest)
+[![GitHub Issues](https://img.shields.io/github/issues/patrix87/spotifyze)](https://github.com/patrix87/spotifyze/issues)
+[![GitHub PRs](https://img.shields.io/github/issues-pr/patrix87/spotifyze)](https://github.com/patrix87/spotifyze/pulls)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
+
 Turn your local music into Spotify playlists.
 
 A desktop app that imports your local music library into Spotify. It reads metadata from audio files and playlist files, fuzzy-matches them against Spotify's catalog (preferring original album releases over compilations and remixes), and creates playlists with the matched tracks.
@@ -18,6 +24,22 @@ A desktop app that imports your local music library into Spotify. It reads metad
 - **Match caching** - results are saved so re-scanning is instant
 - **Cross-platform** - runs on Windows, macOS, and Linux
 - **No server needed** - connects directly to Spotify via OAuth (PKCE)
+
+## Screenshots
+
+**Connect** — Enter your Spotify Client ID and log in with one click.
+
+![Connect to Spotify](docs/screenshots/2.png)
+
+**Add Music** — Drop folders or `.m3u` playlist files. Each source becomes its own Spotify playlist.
+
+![Add your music sources](docs/screenshots/4.png)
+
+**Review Matches** — Browse every match with confidence scores, pick alternatives, preview audio, and skip tracks you don't want before creating the playlist.
+
+![Review and pick matches](docs/screenshots/7.png)
+
+**Done** — Your playlist is now on Spotify !
 
 ## Download
 
@@ -83,6 +105,10 @@ npm run tauri build
 - **Backend** - Rust, Tauri v2
 - **Audio metadata** - lofty
 - **Fuzzy matching** - strsim (Jaro-Winkler)
+
+## Disclaimer
+
+**Spotifyze is not affiliated with, endorsed by, or associated with Spotify AB or any of its subsidiaries.** "Spotify" is a registered trademark of Spotify AB. This is an independent, open-source project that uses the public Spotify Web API.
 
 ## License
 
