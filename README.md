@@ -1,10 +1,11 @@
-# Spotifyze
+# [Spotifyze](https://patrix87.github.io/spotifyze/)
 
 [![CI](https://github.com/patrix87/spotifyze/actions/workflows/ci.yml/badge.svg)](https://github.com/patrix87/spotifyze/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/patrix87/spotifyze)](https://github.com/patrix87/spotifyze/releases/latest)
 [![GitHub Issues](https://img.shields.io/github/issues/patrix87/spotifyze)](https://github.com/patrix87/spotifyze/issues)
 [![GitHub PRs](https://img.shields.io/github/issues-pr/patrix87/spotifyze)](https://github.com/patrix87/spotifyze/pulls)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
+[![Website](https://img.shields.io/badge/website-patrix87.github.io%2Fspotifyze-green)](https://patrix87.github.io/spotifyze/)
 
 Turn your local music into Spotify playlists.
 
